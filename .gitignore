@@ -1,3 +1,7 @@
 bazel-*
 clang.bazelrc
 user.bazelrc
+.idea/
+.bazelproject
+.blaze
+.clwb/
