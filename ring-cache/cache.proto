@@ -4,5 +4,5 @@ package envoy.extensions.filters.http.ring_cache.v3;
 //import "envoy/config/core/v3/base.proto";
 //import "validate/validate.proto";
 
-message RingCacheConfig {
+message RingCacheFilterConfig {
 }

@@ -5,7 +5,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
     RingCacheFilterDecoder::RingCacheFilterDecoder(RingCacheFilterConfigSharedPtr config):
         config_(std::move(config)), decoder_callbacks_(nullptr) {}
 
-    RingCacheFilterDecoder::~RingCacheFilterDecoder() {}
+    RingCacheFilterDecoder::~RingCacheFilterDecoder() = default;
     void RingCacheFilterDecoder::onDestroy() {}
 
     Http::FilterHeadersStatus RingCacheFilterDecoder::decodeHeaders(Http::RequestHeaderMap& headers, bool) {//end_stream

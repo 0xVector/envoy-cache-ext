@@ -1,17 +1,33 @@
-admin:
-  access_log_path: /dev/null
-  address:
-    socket_address: { address: 0.0.0.0, port_value: 9000 }
-
 static_resources:
   listeners:
-    - name: echo_listener
-      address:
-        socket_address: { address: 0.0.0.0, port_value: 10000 }
+    - name: main_listener
+      address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
       filter_chains:
         - filters:
-            - name: ring_cache_lib
+            - name: envoy.filters.network.http_connection_manager
               typed_config:
-                "@type": type.googleapis.com/google.protobuf.Struct   # empty config
-
-  clusters: []    # no upstreams needed for pure echo
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: service
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: service_backend }
+                http_filters:
+                  - name: ring_cache
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ring_cache.v3.RingCacheFilterConfig
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+    - name: service_backend
+      connect_timeout: 2s
+      load_assignment:
+        cluster_name: service_backend
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8080 } } }

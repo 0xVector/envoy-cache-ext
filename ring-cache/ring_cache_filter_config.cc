@@ -27,10 +27,10 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         }
 
         ProtobufTypes::MessagePtr createEmptyConfigProto() override {
-            return std::make_unique<envoy::extensions::filters::http::ring_cache::v3::RingCacheConfig>();
+            return std::make_unique<envoy::extensions::filters::http::ring_cache::v3::RingCacheFilterConfig>();
         }
 
-        std::string name() const override { return "ring_cache"; }
+        [[nodiscard]] std::string name() const override { return "envoy.filters.http.ring_cache"; }
     };
 
     REGISTER_FACTORY(RingCacheFilterFactory, Server::Configuration::NamedHttpFilterConfigFactory);
