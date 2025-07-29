@@ -1,9 +1,8 @@
 #pragma once
 #include "envoy/http/filter.h"
+#include "ring_cache_filter_config.h"
 
 namespace Envoy::Extensions::HttpFilters::RingCache {
-    class RingCacheFilterConfig; // Forward declaration
-    using RingCacheFilterConfigSharedPtr = std::shared_ptr<const RingCacheFilterConfig>;
 
     class RingCacheFilterDecoder : public Http::StreamDecoderFilter, public Logger::Loggable<Logger::Id::filter> {
     public:

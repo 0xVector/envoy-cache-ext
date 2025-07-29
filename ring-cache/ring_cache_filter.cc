@@ -9,8 +9,8 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
     void RingCacheFilterDecoder::onDestroy() {}
 
     Http::FilterHeadersStatus RingCacheFilterDecoder::decodeHeaders(Http::RequestHeaderMap& headers, bool) {//end_stream
-        ENVOY_LOG(debug, "[CACHE] decodeHeaders for {}{}", headers.getHostValue(),
-                  headers.getPathValue());
+        ENVOY_LOG(debug, "[CACHE] decodeHeaders for {}{} rs={}", headers.getHostValue(),
+                  headers.getPathValue(), config_->ringSize());
 
         return Http::FilterHeadersStatus::Continue;
     }

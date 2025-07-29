@@ -2,7 +2,8 @@ syntax = "proto3";
 package envoy.extensions.filters.http.ring_cache.v3;
 
 //import "envoy/config/core/v3/base.proto";
-//import "validate/validate.proto";
+import "validate/validate.proto";
 
 message RingCacheFilterConfig {
+  uint32 ring_size = 1 [(validate.rules).uint32.gt = 0];
 }
