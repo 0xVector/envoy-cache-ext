@@ -1,4 +1,4 @@
-#include "ring_cache_filter.h"
+#include "filter.h"
 #include <memory>
 
 namespace Envoy::Extensions::HttpFilters::RingCache {

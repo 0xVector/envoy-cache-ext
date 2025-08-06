@@ -1,6 +1,6 @@
 #pragma once
 #include "envoy/http/filter.h"
-#include "ring_cache_filter_config.h"
+#include "config.h"
 
 namespace Envoy::Extensions::HttpFilters::RingCache {
 

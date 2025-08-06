@@ -1,6 +1,6 @@
 #include "envoy/server/filter_config.h"
-#include "ring_cache_filter_config.h"
-#include "ring_cache_filter.h"
+#include "config.h"
+#include "filter.h"
 #include "proto-includes.h"
 
 namespace Envoy::Extensions::HttpFilters::RingCache {
