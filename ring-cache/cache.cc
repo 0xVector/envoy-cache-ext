@@ -1,6 +1,5 @@
 #include "cache.h"
 
-#include "../../../../.cache/bazel/_bazel_vector/79390a7724858d3d4ef648cd638a14af/external/com_google_cel_cpp/common/optional_ref.h"
 #include "source/common/http/header_map_impl.h"
 
 namespace Envoy::Extensions::HttpFilters::RingCache {
