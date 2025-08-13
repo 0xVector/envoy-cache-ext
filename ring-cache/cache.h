@@ -10,17 +10,14 @@
 #include "envoy/singleton/instance.h"
 
 namespace Envoy::Extensions::HttpFilters::RingCache {
-    class RingBufferCache : public Singleton::Instance {
-    private:
-        struct Entry {
-            Http::ResponseHeaderMapPtr response_headers_;
-            // ResponseMetadata metadata_;
-            std::shared_ptr<const std::string> body_;
-            // Http::ResponseTrailerMapPtr trailers_;
-            std::string key_;
+    constexpr absl::string_view RingCacheDetailsMessageHit ="ring_cache.hit";
+    constexpr absl::string_view RingCacheDetailsMessageCoalesced = "ring_cache.coalesced";
 
-            [[nodiscard]] uint64_t length() const;
-        };
+    class RingBufferCache : public Singleton::Instance, public Logger::Loggable<Logger::Id::filter> {
+    private:
+        absl::Mutex mutex_; // protects: cache_map_, inflight_map_, slots_
+        // invariant: waiters are fully backfilled
+        // invariant: lookup() is resolved to exactly 1 type
 
     public:
         struct Hit {
@@ -31,7 +28,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         enum class ResultType { Hit, Leader, Follower };
 
         struct LookupResult {
-            ResultType type_;
+            ResultType type_{};
             std::optional<Hit> hit_;
         };
 
@@ -43,18 +40,39 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         using key_t = std::string;
 
         explicit RingBufferCache(uint64_t capacity);
-        [[nodiscard]] LookupResult lookup(const key_t& key, const Waiter& waiter) const;
-        bool insert(const key_t& key, Http::ResponseHeaderMapPtr&& response_headers, std::string&& body);
+        [[nodiscard]] LookupResult lookup(const key_t& key, const Waiter& waiter) ABSL_LOCKS_EXCLUDED(mutex_);
+        void publishHeaders(const key_t& key, const Http::ResponseHeaderMap& response_headers, bool end_stream)
+        ABSL_LOCKS_EXCLUDED(mutex_); // Should only be called by the leader
+        void publishData(const key_t& key, Buffer::Instance& data, bool end_stream) ABSL_LOCKS_EXCLUDED(mutex_);
+        // Should only be called by the leader
 
     private:
-        const uint64_t capacity_;
-        uint64_t used_size_ = 0;
-        // std::deque<key_t> queue_;
-        absl::flat_hash_map<key_t, Entry> map_;
-        std::vector<std::unique_ptr<Entry> > ring_buffer_;
-        absl::Mutex mutex_;
+        struct Entry {
+            Http::ResponseHeaderMapPtr headers_;
+            // ResponseMetadata metadata_;
+            std::shared_ptr<const std::string> body_;
+            // Http::ResponseTrailerMapPtr trailers_;
+            std::string key_;
 
-        void evict_till_capacity(uint64_t size_needed);
+            [[nodiscard]] uint64_t length() const;
+        };
+
+        struct Inflight {
+            Http::ResponseHeaderMapPtr headers_;
+            std::shared_ptr<const std::string> body_;
+            std::vector<Waiter> waiters_;
+        };
+
+        const uint64_t capacity_;
+
+        uint64_t used_size_ = 0;
+        absl::flat_hash_map<key_t, Entry> cache_map_ ABSL_GUARDED_BY(mutex_);
+        absl::flat_hash_map<key_t, Inflight> inflight_map_ ABSL_GUARDED_BY(mutex_);
+        std::vector<absl::optional<Entry> > slots_ ABSL_GUARDED_BY(mutex_);
+
+        void finalize(const key_t& key); // must flush existing waiters (and feed them)
+        void attach_waiter_locked(Inflight& inflight, const Waiter& waiter) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+        void evictTillCapacity(uint64_t size_needed);
     };
 
     SINGLETON_MANAGER_REGISTRATION(ring_cache_singleton); // Register name for the singleton

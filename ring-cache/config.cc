@@ -6,8 +6,6 @@
 #include "proto-includes.h"
 
 namespace Envoy::Extensions::HttpFilters::RingCache {
-    static constexpr absl::string_view SingletonCacheName = "ring_cache_singleton";
-
     RingCacheFilterConfig::RingCacheFilterConfig(const ProtoRingCacheFilterConfig& proto,
                                                  Server::Configuration::ServerFactoryContext& ctx) : cache_size_(
         proto.ring_size()) {
