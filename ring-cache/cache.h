@@ -43,7 +43,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         [[nodiscard]] LookupResult lookup(const key_t& key, const Waiter& waiter) ABSL_LOCKS_EXCLUDED(mutex_);
         void publishHeaders(const key_t& key, const Http::ResponseHeaderMap& response_headers, bool end_stream)
         ABSL_LOCKS_EXCLUDED(mutex_); // Should only be called by the leader
-        void publishData(const key_t& key, Buffer::Instance& data, bool end_stream) ABSL_LOCKS_EXCLUDED(mutex_);
+        void publishData(const key_t& key, const Buffer::Instance& data, bool end_stream) ABSL_LOCKS_EXCLUDED(mutex_);
         // Should only be called by the leader
 
     private:
@@ -59,7 +59,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
         struct Inflight {
             Http::ResponseHeaderMapPtr headers_;
-            std::shared_ptr<const std::string> body_;
+            std::string body_;
             std::vector<Waiter> waiters_;
         };
 
