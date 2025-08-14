@@ -149,7 +149,6 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
                 w->callbacks_->encodeData(buffer, end);
             });
         }
-        // TODO: waiter could possibly get freed before post is finished
 
         if (end_stream) { finalize(key); }
     }
