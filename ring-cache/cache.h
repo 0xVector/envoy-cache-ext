@@ -10,7 +10,7 @@
 #include "envoy/singleton/instance.h"
 
 namespace Envoy::Extensions::HttpFilters::RingCache {
-    constexpr absl::string_view RingCacheDetailsMessageHit ="ring_cache.hit";
+    constexpr absl::string_view RingCacheDetailsMessageHit = "ring_cache.hit";
     constexpr absl::string_view RingCacheDetailsMessageCoalesced = "ring_cache.coalesced";
 
     class RingBufferCache : public Singleton::Instance, public Logger::Loggable<Logger::Id::filter> {
@@ -22,7 +22,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
     public:
         struct Hit {
             Http::ResponseHeaderMapPtr headers_;
-            std::shared_ptr<const std::string> body_;
+            Buffer::OwnedImpl body_;
         };
 
         enum class ResultType { Hit, Leader, Follower };
@@ -48,12 +48,16 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
     private:
         struct Entry {
+            std::string key_; // Needed for eviction
             Http::ResponseHeaderMapPtr headers_;
             // ResponseMetadata metadata_;
-            std::shared_ptr<const std::string> body_;
+            std::string body_;
             // Http::ResponseTrailerMapPtr trailers_;
-            std::string key_;
+            std::atomic<uint32_t> pins_{0}; // Eviction guard (# of uses)
 
+            Entry(const Entry&) = delete;
+            Entry(Entry&&) = delete;
+            ~Entry() { ASSERT(pins_.load(std::memory_order_relaxed) == 0); }
             [[nodiscard]] uint64_t length() const;
         };
 
@@ -68,7 +72,8 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         uint64_t used_size_ = 0;
         absl::flat_hash_map<key_t, Entry> cache_map_ ABSL_GUARDED_BY(mutex_);
         absl::flat_hash_map<key_t, Inflight> inflight_map_ ABSL_GUARDED_BY(mutex_);
-        std::vector<absl::optional<Entry> > slots_ ABSL_GUARDED_BY(mutex_);
+        std::vector<std::unique_ptr<Entry> > slots_ ABSL_GUARDED_BY(mutex_);
+        // Must never reallocate - entries must stay in place
 
         void finalize(const key_t& key); // must flush existing waiters (and feed them)
         void attach_waiter_locked(Inflight& inflight, const Waiter& waiter) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);

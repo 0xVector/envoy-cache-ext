@@ -1,5 +1,6 @@
 #include "cache.h"
 
+#include <atomic>
 #include "source/common/http/header_map_impl.h"
 
 namespace Envoy::Extensions::HttpFilters::RingCache {
@@ -8,31 +9,62 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
     }
 
     RingBufferCache::LookupResult RingBufferCache::lookup(const key_t& key, const Waiter& waiter) {
-        absl::MutexLock lock(&mutex_);
-
         LookupResult result;
+        const Http::ResponseHeaderMap* header_ptr = nullptr;
+        const char* body_data_ptr = nullptr;
+        std::atomic<uint32_t>* pin_ptr = nullptr;
+        size_t body_length = 0;
 
-        // Hit
-        const auto cached_it = cache_map_.find(key);
-        if (cached_it != cache_map_.end()) {
-            auto& [headers, body, _] = cached_it->second;
-            result.type_ = ResultType::Hit;
-            result.hit_.emplace(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*headers), body);
-            return result;
+        /* Lock */ {
+            absl::MutexLock lock(&mutex_);
+
+            const auto cached_it = cache_map_.find(key);
+
+            // Hit
+            if (cached_it != cache_map_.end()) {
+                result.type_ = ResultType::Hit;
+                auto& entry = cached_it->second;
+                entry.pins_.fetch_add(1, std::memory_order_relaxed); // Increase in use to avoid eviction
+                header_ptr = entry.headers_.get();
+                body_data_ptr = entry.body_.data();
+                body_length = entry.body_.length();
+                pin_ptr = &entry.pins_;
+            }
+
+            // Lead/Follow
+            else {
+                const auto [inflight_it, inserted] = inflight_map_.try_emplace(key);
+                // Become leader
+                if (inserted) {
+                    result.type_ = ResultType::Leader;
+                }
+
+                // Inflight Hit (Follower)
+                else {
+                    result.type_ = ResultType::Follower;
+                    attach_waiter_locked(inflight_it->second, waiter);
+                }
+
+                return result;
+            }
         }
 
-        const auto [inflight_it, inserted] = inflight_map_.try_emplace(key);
-        // Become leader
-        if (inserted) {
-            result.type_ = ResultType::Leader;
+        // Serve hit
+        Hit hit;
+        hit.headers_ = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*header_ptr);
+        if (body_length == 0) {
+            pin_ptr->fetch_sub(1, std::memory_order_release);
+        } else {
+            auto* fragment = new Buffer::BufferFragmentImpl(body_data_ptr, body_length,
+                                                            [p=pin_ptr](
+                                                        const void*, size_t, const Buffer::BufferFragmentImpl* self) {
+                                                                p->fetch_sub(1, std::memory_order_release);
+                                                                delete self;
+                                                            });
+            hit.body_.addBufferFragment(*fragment);
         }
 
-        // Inflight Hit
-        else {
-            result.type_ = ResultType::Follower;
-            attach_waiter_locked(inflight_it->second, waiter);
-        }
-
+        result.hit_ = std::move(hit);
         return result;
     }
 
@@ -66,6 +98,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             waiter.dispatcher_->post([cb=waiter.callbacks_, h=std::move(new_header_copy), end=end_stream]() mutable {
                 cb->encodeHeaders(std::move(h), end, RingCacheDetailsMessageCoalesced);
             });
+            // TODO: dispatcher isThreadSafe() ??
         }
 
         if (end_stream) { finalize(key); }
@@ -101,10 +134,15 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         for (auto& waiter: waiters_copy) {
             auto c = chunk; // Bump refcount
             waiter.dispatcher_->post([cb=waiter.callbacks_, c=std::move(c), end=end_stream]() mutable {
-                Buffer::BufferFragmentImpl fragment(c->data(), c->size(),
-                                                    [c=std::move(c)](auto, auto, auto) mutable { c.reset(); });
+                auto* fragment = new Buffer::BufferFragmentImpl(c->data(), c->size(),
+                                                                [c=std::move(c)](
+                                                            const void*, size_t,
+                                                            const Buffer::BufferFragmentImpl* self) mutable {
+                                                                    c.reset();
+                                                                    delete self;
+                                                                });
                 Buffer::OwnedImpl buffer;
-                buffer.addBufferFragment(fragment);
+                buffer.addBufferFragment(*fragment);
                 cb->encodeData(buffer, end);
             });
         }
