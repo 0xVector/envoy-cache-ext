@@ -34,6 +34,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             std::atomic<bool> cancelled{false};
             // TODO: store index in waiters for O(1) removal
         };
+
         using WaiterSharedPtr = std::shared_ptr<Waiter>;
 
         struct LookupResult {
@@ -44,8 +45,9 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
         using key_t = std::string;
 
-        explicit RingBufferCache(uint64_t capacity);
-        [[nodiscard]] LookupResult lookup(const key_t& key, Http::StreamDecoderFilterCallbacks* callbacks) ABSL_LOCKS_EXCLUDED(mutex_);
+        explicit RingBufferCache(size_t capacity, size_t slot_count);
+        [[nodiscard]] LookupResult lookup(const key_t& key, Http::StreamDecoderFilterCallbacks* callbacks)
+        ABSL_LOCKS_EXCLUDED(mutex_);
         void publishHeaders(const key_t& key, const Http::ResponseHeaderMap& response_headers, bool end_stream)
         ABSL_LOCKS_EXCLUDED(mutex_); // Should only be called by the leader
         void publishData(const key_t& key, const Buffer::Instance& data, bool end_stream) ABSL_LOCKS_EXCLUDED(mutex_);
@@ -61,30 +63,35 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             // Http::ResponseTrailerMapPtr trailers_;
             std::atomic<uint32_t> pins_{0}; // Eviction guard (# of uses)
 
+            Entry() {}
+            // Entry(std::string key, Http::ResponseHeaderMapPtr headers, std::string body): key_(key), headers_(std::move(headers)) {}
             Entry(const Entry&) = delete;
             Entry(Entry&&) = delete;
             ~Entry() { ASSERT(pins_.load(std::memory_order_relaxed) == 0); }
-            [[nodiscard]] uint64_t length() const;
+            [[nodiscard]] size_t size() const { return key_.size() + headers_->size() + body_.size(); }
         };
 
         struct Inflight {
             Http::ResponseHeaderMapPtr headers_;
             std::string body_;
             std::vector<WaiterSharedPtr> waiters_;
+            [[nodiscard]] size_t size() const { return headers_->size() + body_.size(); }
         };
 
-        const uint64_t capacity_;
+        const size_t capacity_;
+        const size_t slot_count_;
 
-        uint64_t used_size_ = 0;
-        absl::flat_hash_map<key_t, Entry> cache_map_ ABSL_GUARDED_BY(mutex_);
+        size_t used_size_ = 0;
+        absl::flat_hash_map<key_t, Entry*> cache_map_ ABSL_GUARDED_BY(mutex_);
         absl::flat_hash_map<key_t, Inflight> inflight_map_ ABSL_GUARDED_BY(mutex_);
         std::vector<std::unique_ptr<Entry> > slots_ ABSL_GUARDED_BY(mutex_);
+        size_t head_ = 0; // Always pointed at evicted slot
         // Must never reallocate - entries must stay in place
 
-        // must flush existing waiters (and feed them)
-        void finalize(const key_t& key) ABSL_LOCKS_EXCLUDED(mutex_);
-        static void attach_backfill_waiter_locked(Inflight& inflight, const WaiterSharedPtr& waiter) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
-        void evictTillCapacity(uint64_t size_needed);
+        void finalizeLocked(const key_t& key) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+        static void attachBackfillWaiterLocked(Inflight& inflight, const WaiterSharedPtr& waiter)
+        ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+        bool evictTillCapacityLocked(size_t size_needed) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
     };
 
     SINGLETON_MANAGER_REGISTRATION(ring_cache_singleton); // Register name for the singleton
