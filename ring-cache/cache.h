@@ -12,6 +12,7 @@
 namespace Envoy::Extensions::HttpFilters::RingCache {
     constexpr absl::string_view RingCacheDetailsMessageHit = "ring_cache.hit";
     constexpr absl::string_view RingCacheDetailsMessageCoalesced = "ring_cache.coalesced";
+    constexpr absl::string_view RingCacheDetailsMessageCoalescedBackfill = "ring_cache.coalesced_backfill";
 
     class RingBufferCache : public Singleton::Instance, public Logger::Loggable<Logger::Id::filter> {
     private:
@@ -82,7 +83,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
         // must flush existing waiters (and feed them)
         void finalize(const key_t& key) ABSL_LOCKS_EXCLUDED(mutex_);
-
+        static void attach_backfill_waiter_locked(Inflight& inflight, const WaiterSharedPtr& waiter) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
         void evictTillCapacity(uint64_t size_needed);
     };
 

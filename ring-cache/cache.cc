@@ -44,7 +44,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
                 else {
                     result.type_ = ResultType::Follower;
                     result.waiter_ = std::make_shared<Waiter>(&callbacks->dispatcher(), callbacks);
-                    inflight_it->second.waiters_.push_back(result.waiter_); // Add a shared_ptr copy to waiters
+                    attach_backfill_waiter_locked(inflight_it->second, result.waiter_);
                 }
 
                 return result;
@@ -185,5 +185,34 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             const auto it = inflight_map_.find(key);
             ASSERT(it != inflight_map_.end(), "Finalize called on not-inflight key");
         }
+    }
+
+    void RingBufferCache::attach_backfill_waiter_locked(Inflight& inflight, const WaiterSharedPtr& waiter) {
+        inflight.waiters_.push_back(waiter);
+
+        // Presume not the end of stream - if it were end, this would not be inflight anymore
+        ASSERT(inflight.headers_ || inflight.body_.empty());
+
+        // Headers ready
+        Http::ResponseHeaderMapPtr header;
+        if (inflight.headers_) {
+            header = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*inflight.headers_);
+        } else {
+            ASSERT(inflight.body_.empty());
+            return;
+        }
+
+        // Body ready
+        Buffer::OwnedImpl buffer;
+        if (!inflight.body_.empty()) { buffer.add(inflight.body_); } // Copy out whole prefix
+
+        waiter->dispatcher_->post( // TODO: buffer is a big struct so expensive copy, rework?
+            [w=waiter, h=std::move(header), b=std::move(buffer)]() mutable {
+                if (w->cancelled.load(std::memory_order_acquire)) { return; }
+                w->callbacks_->encodeHeaders(std::move(h), false, RingCacheDetailsMessageCoalescedBackfill);
+                if (b.length() > 0) {
+                    w->callbacks_->encodeData(b, false);
+                }
+            });
     }
 }
