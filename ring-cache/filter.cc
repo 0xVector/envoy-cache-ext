@@ -6,7 +6,12 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         cache_(config->cache()) {}
 
     RingCacheFilterDecoder::~RingCacheFilterDecoder() = default;
-    void RingCacheFilterDecoder::onDestroy() {} // TODO: drop own waiter if follower
+    void RingCacheFilterDecoder::onDestroy() {
+        if (role_ == Role::Follower) {
+            waiter_->cancelled.store(true, std::memory_order_release);
+            cache_->removeWaiter(key_, waiter_);
+        }
+    }
 
     Http::FilterHeadersStatus RingCacheFilterDecoder::decodeHeaders(Http::RequestHeaderMap& headers,
                                                                     const bool end_stream) {
@@ -18,8 +23,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             return Http::FilterHeadersStatus::Continue;
         }
 
-        auto [type, hit] = cache_->lookup(
-            key_, RingBufferCache::Waiter{&decoder_callbacks_->dispatcher(), decoder_callbacks_});
+        auto [type, hit, waiter] = cache_->lookup(key_, decoder_callbacks_);
 
         switch (type) {
             case RingBufferCache::ResultType::Hit: {
@@ -29,10 +33,9 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
                 decoder_callbacks_->encodeHeaders(std::move(resp_headers),
                                                   end_stream, //! resp_body || resp_body->empty(),
                                                   RingCacheDetailsMessageHit);
-                if (resp_body && !resp_body->empty()) { // !endstream
+                if (!end_stream && resp_body.length() > 0) {
                     ENVOY_LOG(debug, "[CACHE] decodeHeaders: sending cached body for key={}", key_);
-                    Buffer::OwnedImpl out(resp_body->data()); // Copies data to Buffer
-                    decoder_callbacks_->encodeData(out, true);
+                    decoder_callbacks_->encodeData(resp_body, true);
                 }
                 return Http::FilterHeadersStatus::StopIteration;
             }
@@ -45,6 +48,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
             case RingBufferCache::ResultType::Follower: {
                 role_ = Role::Follower;
+                waiter_ = waiter;
                 ENVOY_LOG(debug, "[CACHE] decodeHeaders: cache follower for key={}", key_);
                 return Http::FilterHeadersStatus::StopIteration;
             }

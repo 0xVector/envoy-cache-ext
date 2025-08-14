@@ -8,7 +8,8 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         slots_.resize(capacity);
     }
 
-    RingBufferCache::LookupResult RingBufferCache::lookup(const key_t& key, const Waiter& waiter) {
+    RingBufferCache::LookupResult RingBufferCache::lookup(const key_t& key,
+                                                          Http::StreamDecoderFilterCallbacks* callbacks) {
         LookupResult result;
         const Http::ResponseHeaderMap* header_ptr = nullptr;
         const char* body_data_ptr = nullptr;
@@ -42,7 +43,8 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
                 // Inflight Hit (Follower)
                 else {
                     result.type_ = ResultType::Follower;
-                    attach_waiter_locked(inflight_it->second, waiter);
+                    result.waiter_ = std::make_shared<Waiter>(&callbacks->dispatcher(), callbacks);
+                    inflight_it->second.waiters_.push_back(result.waiter_); // Add a shared_ptr copy to waiters
                 }
 
                 return result;
@@ -70,11 +72,10 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
     void RingBufferCache::publishHeaders(const key_t& key, const Http::ResponseHeaderMap& response_headers,
                                          bool end_stream) {
-        std::vector<Waiter> waiters_copy;
+        std::vector<WaiterSharedPtr> waiters_copy;
         Http::ResponseHeaderMapPtr header_copy;
 
-        // Lock
-        {
+        /* Lock */ {
             absl::MutexLock lock(&mutex_);
 
             const auto it = inflight_map_.find(key);
@@ -93,11 +94,13 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         }
 
         // Feed possible waiters - can be done unlocked (waiters coming after unlock will be fed by attach from already present headers)
-        for (auto& waiter: waiters_copy) {
+        for (const auto& waiter: waiters_copy) {
             auto new_header_copy = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*header_copy);
-            waiter.dispatcher_->post([cb=waiter.callbacks_, h=std::move(new_header_copy), end=end_stream]() mutable {
-                cb->encodeHeaders(std::move(h), end, RingCacheDetailsMessageCoalesced);
-            });
+            waiter->dispatcher_->post(
+                [w=waiter, h=std::move(new_header_copy), end=end_stream]() mutable {
+                    if (w->cancelled.load(std::memory_order_acquire)) { return; }
+                    w->callbacks_->encodeHeaders(std::move(h), end, RingCacheDetailsMessageCoalesced);
+                });
             // TODO: dispatcher isThreadSafe() ??
         }
 
@@ -105,10 +108,9 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
     }
 
     void RingBufferCache::publishData(const key_t& key, const Buffer::Instance& data, bool end_stream) {
-        std::vector<Waiter> waiters_copy;
+        std::vector<WaiterSharedPtr> waiters_copy;
 
-        // Lock
-        {
+        /* Lock */ {
             absl::MutexLock lock(&mutex_);
 
             const auto it = inflight_map_.find(key);
@@ -133,7 +135,8 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         // Feed possible waiters - can be done unlocked (waiters coming after unlock will be fed by attach from already present headers)
         for (auto& waiter: waiters_copy) {
             auto c = chunk; // Bump refcount
-            waiter.dispatcher_->post([cb=waiter.callbacks_, c=std::move(c), end=end_stream]() mutable {
+            waiter->dispatcher_->post([w=waiter, c=std::move(c), end=end_stream]() mutable {
+                if (w->cancelled.load(std::memory_order_acquire)) { return; }
                 auto* fragment = new Buffer::BufferFragmentImpl(c->data(), c->size(),
                                                                 [c=std::move(c)](
                                                             const void*, size_t,
@@ -143,11 +146,45 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
                                                                 });
                 Buffer::OwnedImpl buffer;
                 buffer.addBufferFragment(*fragment);
-                cb->encodeData(buffer, end);
+                w->callbacks_->encodeData(buffer, end);
             });
         }
         // TODO: waiter could possibly get freed before post is finished
 
         if (end_stream) { finalize(key); }
+    }
+
+    void RingBufferCache::removeWaiter(const key_t& key, const WaiterSharedPtr& waiter) {
+        absl::MutexLock lock(&mutex_);
+
+        const auto it = inflight_map_.find(key);
+        if (it == inflight_map_.end()) {
+            ENVOY_LOG(debug, "[CACHE] removeWaiter: inflight entry missing");
+            return;
+        }
+
+        Inflight& inflight = it->second;
+        std::vector<WaiterSharedPtr>& waiters = inflight.waiters_;
+
+        for (size_t i = 0; i < waiters.size(); ++i) { // TODO: O(1)
+            if (waiters[i] == waiter) { // Swap & pop (comparing ptrs)
+                std::swap(waiters[i], waiters[waiters.size() - 1]);
+                waiters.pop_back();
+                return;
+            }
+        }
+
+        ENVOY_LOG(debug, "[CACHE] removeWaiter: waiter entry missing");
+    }
+
+    void RingBufferCache::finalize(const key_t& key) {
+        std::vector<Waiter> waiters_copy;
+
+        /* Lock */ {
+            absl::MutexLock lock(&mutex_);
+
+            const auto it = inflight_map_.find(key);
+            ASSERT(it != inflight_map_.end(), "Finalize called on not-inflight key");
+        }
     }
 }
