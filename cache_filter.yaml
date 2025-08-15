@@ -8,19 +8,27 @@ static_resources:
               typed_config:
                 "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                 stat_prefix: ingress_http
+                stream_idle_timeout: 0s # stream_idle_timeout: 0s is to disable timeout on long responses
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        text_format: "%RESPONSE_CODE% %RESPONSE_CODE_DETAILS%\n"
                 route_config:
                   name: local_route
                   virtual_hosts:
                     - name: service
-                      domains: ["*"]
+                      domains: [ "*" ]
                       routes:
                         - match: { prefix: "/" }
-                          route: { cluster: service_backend }
+                          route: { cluster: service_backend, timeout: 0s } # timeout: 0s is to disable timeout on long responses
                 http_filters:
                   - name: ring_cache
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.ring_cache.v3.RingCacheFilterConfig
-                      ring_size: 1024
+                      ring_size: 1048576
+                      slot_count: 128
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -31,4 +39,8 @@ static_resources:
         cluster_name: service_backend
         endpoints:
           - lb_endpoints:
-              - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8080 } } }
+              - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8000 } } }
+
+admin:
+  access_log_path: /dev/null
+  address: { socket_address: { address: 127.0.0.1, port_value: 9901 } }
