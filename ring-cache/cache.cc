@@ -143,7 +143,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
                 auto* fragment = new Buffer::BufferFragmentImpl(c->data(), c->size(),
                                                                 [c=std::move(c)](
                                                             const void*, size_t,
-                                                            const Buffer::BufferFragmentImpl* self) mutable {
+                                                            const Buffer::BufferFragmentImpl* self) mutable noexcept {
                                                                     c.reset();
                                                                     delete self;
                                                                 });
@@ -231,6 +231,9 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
     bool RingBufferCache::evictTillCapacityLocked(const size_t size_needed) {
         const size_t start = head_;
+        // Head might be at the just inserted-to slot now
+
+        // Ensure enough capacity
         while (capacity_ - used_size_ < size_needed) {
             head_ = (head_ + 1) % slot_count_;
 
@@ -246,7 +249,16 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             used_size_ -= entry.size();
             cache_map_.erase(entry.key_);
             slots_[head_].reset();
+            return true;
         }
+
+        // Had enough capacity from start, but need a free slot
+        const size_t start2 = head_;
+        while (slots_[head_]) {
+            head_ = (head_ + 1) % slot_count_;
+            if (head_ == start2) { return false; } // No slot free
+        }
+
         ASSERT(!slots_[head_]);
         return true;
     }

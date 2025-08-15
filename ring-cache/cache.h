@@ -84,13 +84,14 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         size_t used_size_ ABSL_GUARDED_BY(mutex_) = 0;
         absl::flat_hash_map<key_t, Entry*> cache_map_ ABSL_GUARDED_BY(mutex_);
         absl::flat_hash_map<key_t, Inflight> inflight_map_ ABSL_GUARDED_BY(mutex_);
-        std::vector<std::unique_ptr<Entry> > slots_ ABSL_GUARDED_BY(mutex_);
-        size_t head_ ABSL_GUARDED_BY(mutex_) = 0; // Always pointed at evicted slot
-        // Must never reallocate - entries must stay in place
+        std::vector<std::unique_ptr<Entry> > slots_ ABSL_GUARDED_BY(mutex_); // Must never reallocate - entries must stay in place
+        size_t head_ ABSL_GUARDED_BY(mutex_) = 0;
 
         void finalizeLocked(const key_t& key) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
         void attachBackfillWaiterLocked(Inflight& inflight, const WaiterSharedPtr& waiter)
         ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+
+        // After calling this, if returns true, head_ points to a free slot
         bool evictTillCapacityLocked(size_t size_needed) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
     };
 

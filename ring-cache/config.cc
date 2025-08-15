@@ -8,7 +8,7 @@
 namespace Envoy::Extensions::HttpFilters::RingCache {
     RingCacheFilterConfig::RingCacheFilterConfig(const ProtoRingCacheFilterConfig& proto,
                                                  Server::Configuration::ServerFactoryContext& ctx) : cache_size_(
-        proto.ring_size()) {
+        proto.ring_size()), slot_count_(proto.slot_count()) {
         cache_ = ctx.singletonManager().getTyped<RingBufferCache>(
             SINGLETON_MANAGER_REGISTERED_NAME(ring_cache_singleton),
             //std::string(SingletonCacheName),
