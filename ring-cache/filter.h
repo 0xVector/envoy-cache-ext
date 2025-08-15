@@ -36,7 +36,9 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         RingBufferCacheSharedPtr cache_;
         Http::StreamDecoderFilterCallbacks* decoder_callbacks_{nullptr};
         Http::StreamEncoderFilterCallbacks* encoder_callbacks_{nullptr};
+
         std::string key_;
+        bool done_ = false;
         Role role_{Role::Unset};
         RingBufferCache::WaiterSharedPtr waiter_; // Only not null when rote_ == Follower
 

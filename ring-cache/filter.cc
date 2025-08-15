@@ -8,7 +8,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
     RingCacheFilter::~RingCacheFilter() = default;
 
     void RingCacheFilter::onDestroy() {
-        if (role_ == Role::Follower) {
+        if (role_ == Role::Follower && !done_) {
             waiter_->cancelled.store(true, std::memory_order_release);
             cache_->removeWaiter(key_, waiter_);
         }
@@ -38,6 +38,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
                     ENVOY_LOG(debug, "[CACHE] decodeHeaders: sending cached body for key={}", key_);
                     decoder_callbacks_->encodeData(resp_body, true);
                 }
+                done_= true;
                 return Http::FilterHeadersStatus::StopIteration;
             }
 
@@ -76,12 +77,14 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
     Http::FilterHeadersStatus
     RingCacheFilter::encodeHeaders(Http::ResponseHeaderMap& headers, const bool end_stream) {
+        if (end_stream) done_ = true;
         if (role_ != Role::Leader) { return Http::FilterHeadersStatus::Continue; }
         cache_->publishHeaders(key_, headers, end_stream);
         return Http::FilterHeadersStatus::Continue;
     }
 
     Http::FilterDataStatus RingCacheFilter::encodeData(Buffer::Instance& data, const bool end_stream) {
+        if (end_stream) done_ = true;
         if (role_ != Role::Leader) { return Http::FilterDataStatus::Continue; }
         cache_->publishData(key_, data, end_stream);
         return Http::FilterDataStatus::Continue;
