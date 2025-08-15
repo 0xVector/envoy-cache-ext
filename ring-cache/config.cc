@@ -12,7 +12,9 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         cache_ = ctx.singletonManager().getTyped<RingBufferCache>(
             SINGLETON_MANAGER_REGISTERED_NAME(ring_cache_singleton),
             //std::string(SingletonCacheName),
-            [&proto] { return std::make_shared<RingBufferCache>(proto.ring_size()); }, true);
+            [&proto] {
+                return std::make_shared<RingBufferCache>(proto.ring_size(), proto.slot_count());
+            }, true);
     }
 
     class RingCacheFilterFactory : public Server::Configuration::NamedHttpFilterConfigFactory {

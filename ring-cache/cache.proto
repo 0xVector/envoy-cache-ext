@@ -5,5 +5,6 @@ package envoy.extensions.filters.http.ring_cache.v3;
 import "validate/validate.proto";
 
 message RingCacheFilterConfig {
-  uint32 ring_size = 1 [(validate.rules).uint32.gt = 0];
+  uint64 ring_size = 1 [(validate.rules).uint64.gt = 0];
+  uint64 slot_count = 2 [(validate.rules).uint64.gt = 0];
 }
