@@ -15,8 +15,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         // TODO: cancellation for Leader !!!
     }
 
-    Http::FilterHeadersStatus RingCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers,
-                                                                    const bool) {
+    Http::FilterHeadersStatus RingCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers, const bool) {
         ENVOY_LOG(debug, "[CACHE] decodeHeaders for {}{} rs={}", headers.getHostValue(),
                   headers.getPathValue(), config_->cacheSize());
 
@@ -38,7 +37,8 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
                     ENVOY_LOG(debug, "[CACHE] decodeHeaders: sending cached body for key={}", key_);
                     decoder_callbacks_->encodeData(resp_body, true);
                 }
-                done_= true;
+                done_ = true;
+                ENVOY_LOG(debug, "[CACHE] decodeHeaders: done for key={}", key_);
                 return Http::FilterHeadersStatus::StopIteration;
             }
 
@@ -77,24 +77,28 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
     Http::FilterHeadersStatus
     RingCacheFilter::encodeHeaders(Http::ResponseHeaderMap& headers, const bool end_stream) {
-        if (end_stream) done_ = true;
+        ENVOY_LOG(debug, "[CACHE] encodeHeaders for key {} end_stream={}", key_, end_stream);
+        if (end_stream) { done_ = true; }
         if (role_ != Role::Leader) { return Http::FilterHeadersStatus::Continue; }
         cache_->publishHeaders(key_, headers, end_stream);
         return Http::FilterHeadersStatus::Continue;
     }
 
     Http::FilterDataStatus RingCacheFilter::encodeData(Buffer::Instance& data, const bool end_stream) {
-        if (end_stream) done_ = true;
+        ENVOY_LOG(debug, "[CACHE] encodeData for key {} end_stream={}", key_, end_stream);
+        if (end_stream) { done_ = true; }
         if (role_ != Role::Leader) { return Http::FilterDataStatus::Continue; }
         cache_->publishData(key_, data, end_stream);
         return Http::FilterDataStatus::Continue;
     }
 
     Http::FilterTrailersStatus RingCacheFilter::encodeTrailers(Http::ResponseTrailerMap&) {
+        ENVOY_LOG(debug, "[CACHE] got trailers !!!");
         return Http::FilterTrailersStatus::Continue;
     }
 
     Http::FilterMetadataStatus RingCacheFilter::encodeMetadata(Http::MetadataMap&) {
+        ENVOY_LOG(debug, "[CACHE] got metadata !!!");
         return Http::FilterMetadataStatus::Continue;
     }
 

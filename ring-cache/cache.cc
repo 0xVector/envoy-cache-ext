@@ -75,6 +75,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
                                          bool end_stream) {
         std::vector<WaiterSharedPtr> waiters_copy;
         Http::ResponseHeaderMapPtr header_copy;
+        ENVOY_LOG(debug, "[CACHE] publishHeaders: key={}, end_stream={}", key, end_stream);
 
         /* Lock */ {
             absl::MutexLock lock(&mutex_);
@@ -97,6 +98,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         }
 
         // Feed possible waiters - can be done unlocked (waiters coming after unlock will be fed by attach from already present headers)
+        ENVOY_LOG(debug, "[CACHE] publishHeaders: feeding {} waiters", waiters_copy.size());
         for (const auto& waiter: waiters_copy) {
             auto new_header_copy = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*header_copy);
             waiter->dispatcher_->post(
@@ -110,6 +112,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
     void RingBufferCache::publishData(const key_t& key, const Buffer::Instance& data, bool end_stream) {
         std::vector<WaiterSharedPtr> waiters_copy;
+        ENVOY_LOG(debug, "[CACHE] publishData: key={}, end_stream={}", key, end_stream);
 
         /* Lock */ {
             absl::MutexLock lock(&mutex_);
@@ -136,6 +139,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         const auto chunk = std::make_shared<std::string>(data.toString());
 
         // Feed possible waiters - can be done unlocked (waiters coming after unlock will be fed by attach from already present headers)
+        ENVOY_LOG(debug, "[CACHE] publishData: feeding {} waiters", waiters_copy.size());
         for (auto& waiter: waiters_copy) {
             auto c = chunk; // Bump refcount
             waiter->dispatcher_->post([w=waiter, c=std::move(c), end=end_stream]() mutable {
@@ -181,6 +185,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         const auto inflight_it = inflight_map_.find(key);
         ASSERT(inflight_it != inflight_map_.end(), "Finalize called on non-inflight key");
         Inflight& inflight = inflight_it->second;
+        ENVOY_LOG(debug, "[CACHE] finalizeLocked: key={}", key);
 
         // Have space to move to permanent cache
         const size_t size = inflight.size() + key.size();
@@ -195,7 +200,8 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             cache_map_.insert_or_assign(key, slots_[head_].get());
             used_size_ += size;
             ASSERT(size == slot.size());
-        }
+            ENVOY_LOG(debug, "[CACHE] finalizeLocked: key={} moved to cache, size={}", key, size);
+        } else { ENVOY_LOG(debug, "[CACHE] finalizeLocked: key={} dropped due to no space", key); }
 
         inflight_map_.erase(inflight_it);
     }
@@ -219,6 +225,9 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         Buffer::OwnedImpl buffer;
         if (!inflight.body_.empty()) { buffer.add(inflight.body_); } // Copy out whole prefix
 
+        ENVOY_LOG(debug, "[CACHE] backfilling waiter: key={}, headers={}, body_length={}, inflight_size={}",
+                  inflight.headers_->getStatusValue(), header->size(), buffer.length(), inflight.size());
+
         waiter->dispatcher_->post( // TODO: buffer is a big struct so expensive copy, rework?
             [w=waiter, h=std::move(header), b=std::move(buffer)]() mutable {
                 if (w->cancelled.load(std::memory_order_acquire)) { return; }
@@ -230,6 +239,8 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
     }
 
     bool RingBufferCache::evictTillCapacityLocked(const size_t size_needed) {
+        ENVOY_LOG(debug, "[CACHE] starting eviction: size_needed={}, used_size_={}, capacity_={}",
+                  size_needed, used_size_, capacity_);
         const size_t start = head_;
         // Head might be at the just inserted-to slot now
 
@@ -238,7 +249,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             head_ = (head_ + 1) % slot_count_;
 
             // Back at start
-            if (start == head_) { return false; }
+            if (start == head_) { ENVOY_LOG(debug, "[CACHE] no space: size_needed={}", size_needed); return false; }
 
             // Try evict
             if (!slots_[head_]) { continue; }
@@ -246,20 +257,22 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             if (entry.pins_.load(std::memory_order_acquire) > 0) { continue; }
 
             // Can evict
+            ENVOY_LOG(debug, "[CACHE] evicted: key={}, size={}", entry.key_, entry.size());
             used_size_ -= entry.size();
             cache_map_.erase(entry.key_);
             slots_[head_].reset();
-            return true;
         }
 
-        // Had enough capacity from start, but need a free slot
-        const size_t start2 = head_;
+        // Might need to also find a free slot if we haven't evicted
+        const size_t start_slot = head_;
         while (slots_[head_]) {
             head_ = (head_ + 1) % slot_count_;
-            if (head_ == start2) { return false; } // No slot free
+            if (head_ == start_slot) { return false; } // No slot free
         }
 
         ASSERT(!slots_[head_]);
+        ENVOY_LOG(debug, "[CACHE] eviction done: size_needed={}, used_size_={}, capacity_={}",
+                  size_needed, used_size_, capacity_);
         return true;
     }
 }
