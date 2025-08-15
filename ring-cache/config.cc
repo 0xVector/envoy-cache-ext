@@ -6,6 +6,8 @@
 #include "proto-includes.h"
 
 namespace Envoy::Extensions::HttpFilters::RingCache {
+    SINGLETON_MANAGER_REGISTRATION(ring_cache_singleton); // Register name for the singleton
+
     RingCacheFilterConfig::RingCacheFilterConfig(const ProtoRingCacheFilterConfig& proto,
                                                  Server::Configuration::ServerFactoryContext& ctx) : cache_size_(
         proto.ring_size()), slot_count_(proto.slot_count()) {
@@ -28,7 +30,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             auto shared_cfg = std::make_shared<RingCacheFilterConfig>(parsed_proto, ctx);
 
             return [shared_cfg](Http::FilterChainFactoryCallbacks& callbacks) -> void {
-                callbacks.addStreamDecoderFilter(std::make_shared<RingCacheFilterDecoder>(shared_cfg));
+                callbacks.addStreamFilter(std::make_shared<RingCacheFilter>(shared_cfg));
             };
         }
 

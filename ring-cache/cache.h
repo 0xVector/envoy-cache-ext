@@ -95,7 +95,5 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         bool evictTillCapacityLocked(size_t size_needed) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
     };
 
-    SINGLETON_MANAGER_REGISTRATION(ring_cache_singleton); // Register name for the singleton
-
     using RingBufferCacheSharedPtr = std::shared_ptr<RingBufferCache>;
 }

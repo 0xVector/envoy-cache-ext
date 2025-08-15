@@ -2,12 +2,12 @@
 #include <memory>
 
 namespace Envoy::Extensions::HttpFilters::RingCache {
-    RingCacheFilterDecoder::RingCacheFilterDecoder(RingCacheFilterConfigSharedPtr config) : config_(std::move(config)),
-        cache_(config->cache()) {}
+    RingCacheFilter::RingCacheFilter(RingCacheFilterConfigSharedPtr config) : config_(std::move(config)),
+        cache_(config_->cache()) {}
 
-    RingCacheFilterDecoder::~RingCacheFilterDecoder() = default;
+    RingCacheFilter::~RingCacheFilter() = default;
 
-    void RingCacheFilterDecoder::onDestroy() {
+    void RingCacheFilter::onDestroy() {
         if (role_ == Role::Follower) {
             waiter_->cancelled.store(true, std::memory_order_release);
             cache_->removeWaiter(key_, waiter_);
@@ -15,7 +15,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         // TODO: cancellation for Leader !!!
     }
 
-    Http::FilterHeadersStatus RingCacheFilterDecoder::decodeHeaders(Http::RequestHeaderMap& headers,
+    Http::FilterHeadersStatus RingCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers,
                                                                     const bool) {
         ENVOY_LOG(debug, "[CACHE] decodeHeaders for {}{} rs={}", headers.getHostValue(),
                   headers.getPathValue(), config_->cacheSize());
@@ -58,48 +58,48 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         return Http::FilterHeadersStatus::Continue;
     }
 
-    Http::FilterDataStatus RingCacheFilterDecoder::decodeData(Buffer::Instance&, bool) {
+    Http::FilterDataStatus RingCacheFilter::decodeData(Buffer::Instance&, bool) {
         return Http::FilterDataStatus::Continue;
     }
 
-    Http::FilterTrailersStatus RingCacheFilterDecoder::decodeTrailers(Http::RequestTrailerMap&) {
+    Http::FilterTrailersStatus RingCacheFilter::decodeTrailers(Http::RequestTrailerMap&) {
         return Http::FilterTrailersStatus::Continue;
     }
 
-    void RingCacheFilterDecoder::setDecoderFilterCallbacks(Http::StreamDecoderFilterCallbacks& callbacks) {
+    void RingCacheFilter::setDecoderFilterCallbacks(Http::StreamDecoderFilterCallbacks& callbacks) {
         decoder_callbacks_ = &callbacks;
     }
 
-    Http::Filter1xxHeadersStatus RingCacheFilterDecoder::encode1xxHeaders(Http::ResponseHeaderMap&) {
+    Http::Filter1xxHeadersStatus RingCacheFilter::encode1xxHeaders(Http::ResponseHeaderMap&) {
         return Http::Filter1xxHeadersStatus::Continue;
     }
 
     Http::FilterHeadersStatus
-    RingCacheFilterDecoder::encodeHeaders(Http::ResponseHeaderMap& headers, const bool end_stream) {
+    RingCacheFilter::encodeHeaders(Http::ResponseHeaderMap& headers, const bool end_stream) {
         if (role_ != Role::Leader) { return Http::FilterHeadersStatus::Continue; }
         cache_->publishHeaders(key_, headers, end_stream);
         return Http::FilterHeadersStatus::Continue;
     }
 
-    Http::FilterDataStatus RingCacheFilterDecoder::encodeData(Buffer::Instance& data, const bool end_stream) {
+    Http::FilterDataStatus RingCacheFilter::encodeData(Buffer::Instance& data, const bool end_stream) {
         if (role_ != Role::Leader) { return Http::FilterDataStatus::Continue; }
         cache_->publishData(key_, data, end_stream);
         return Http::FilterDataStatus::Continue;
     }
 
-    Http::FilterTrailersStatus RingCacheFilterDecoder::encodeTrailers(Http::ResponseTrailerMap&) {
+    Http::FilterTrailersStatus RingCacheFilter::encodeTrailers(Http::ResponseTrailerMap&) {
         return Http::FilterTrailersStatus::Continue;
     }
 
-    Http::FilterMetadataStatus RingCacheFilterDecoder::encodeMetadata(Http::MetadataMap&) {
+    Http::FilterMetadataStatus RingCacheFilter::encodeMetadata(Http::MetadataMap&) {
         return Http::FilterMetadataStatus::Continue;
     }
 
-    void RingCacheFilterDecoder::setEncoderFilterCallbacks(Http::StreamEncoderFilterCallbacks& callbacks) {
+    void RingCacheFilter::setEncoderFilterCallbacks(Http::StreamEncoderFilterCallbacks& callbacks) {
         encoder_callbacks_ = &callbacks;
     }
 
-    bool RingCacheFilterDecoder::buildKey(const absl::string_view host, const absl::string_view path) {
+    bool RingCacheFilter::buildKey(const absl::string_view host, const absl::string_view path) {
         if (host.empty() || path.empty())
             return false;
 

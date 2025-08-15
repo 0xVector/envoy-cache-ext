@@ -4,12 +4,12 @@
 #include "cache.h"
 
 namespace Envoy::Extensions::HttpFilters::RingCache {
-    class RingCacheFilterDecoder :
+    class RingCacheFilter :
             public Http::StreamFilter,
             public Logger::Loggable<Logger::Id::filter> {
     public:
-        explicit RingCacheFilterDecoder(RingCacheFilterConfigSharedPtr);
-        ~RingCacheFilterDecoder() override;
+        explicit RingCacheFilter(RingCacheFilterConfigSharedPtr);
+        ~RingCacheFilter() override;
 
         // Http::StreamFilterBase
         void onDestroy() override;
