@@ -16,7 +16,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
     class RingBufferCache : public Singleton::Instance, public Logger::Loggable<Logger::Id::filter> {
     private:
-        absl::Mutex mutex_; // protects: cache_map_, inflight_map_, slots_
+        absl::Mutex mutex_; // protects used_size_, cache_map_, inflight_map_, slots_, head_
         // invariant: waiters are fully backfilled
         // invariant: lookup() is resolved to exactly 1 type
 
@@ -52,7 +52,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         ABSL_LOCKS_EXCLUDED(mutex_); // Should only be called by the leader
         void publishData(const key_t& key, const Buffer::Instance& data, bool end_stream) ABSL_LOCKS_EXCLUDED(mutex_);
         // Should only be called by the leader
-        void removeWaiter(const key_t& key, const WaiterSharedPtr& waiter);
+        void removeWaiter(const key_t& key, const WaiterSharedPtr& waiter) ABSL_LOCKS_EXCLUDED(mutex_);
 
     private:
         struct Entry {
@@ -81,15 +81,15 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         const size_t capacity_;
         const size_t slot_count_;
 
-        size_t used_size_ = 0;
+        size_t used_size_ ABSL_GUARDED_BY(mutex_) = 0;
         absl::flat_hash_map<key_t, Entry*> cache_map_ ABSL_GUARDED_BY(mutex_);
         absl::flat_hash_map<key_t, Inflight> inflight_map_ ABSL_GUARDED_BY(mutex_);
         std::vector<std::unique_ptr<Entry> > slots_ ABSL_GUARDED_BY(mutex_);
-        size_t head_ = 0; // Always pointed at evicted slot
+        size_t head_ ABSL_GUARDED_BY(mutex_) = 0; // Always pointed at evicted slot
         // Must never reallocate - entries must stay in place
 
         void finalizeLocked(const key_t& key) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
-        static void attachBackfillWaiterLocked(Inflight& inflight, const WaiterSharedPtr& waiter)
+        void attachBackfillWaiterLocked(Inflight& inflight, const WaiterSharedPtr& waiter)
         ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
         bool evictTillCapacityLocked(size_t size_needed) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
     };
