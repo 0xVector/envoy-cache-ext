@@ -46,7 +46,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         using key_t = std::string;
 
         explicit RingBufferCache(size_t capacity, size_t slot_count);
-        [[nodiscard]] LookupResult lookup(const key_t& key, Http::StreamDecoderFilterCallbacks* callbacks)
+        [[nodiscard]] LookupResult lookup(absl::string_view key, Http::StreamDecoderFilterCallbacks* callbacks)
         ABSL_LOCKS_EXCLUDED(mutex_);
         void publishHeaders(const key_t& key, const Http::ResponseHeaderMap& response_headers, bool end_stream)
         ABSL_LOCKS_EXCLUDED(mutex_); // Should only be called by the leader

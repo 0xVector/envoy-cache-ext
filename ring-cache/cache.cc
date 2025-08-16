@@ -9,7 +9,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         slots_.resize(slot_count);
     }
 
-    RingBufferCache::LookupResult RingBufferCache::lookup(const key_t& key,
+    RingBufferCache::LookupResult RingBufferCache::lookup(const absl::string_view key,
                                                           Http::StreamDecoderFilterCallbacks* callbacks) {
         LookupResult result;
         const Http::ResponseHeaderMap* header_ptr = nullptr;
@@ -44,6 +44,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
                 // Inflight Hit (Follower)
                 else {
                     result.type_ = ResultType::Follower;
+                    ASSERT(callbacks != nullptr);
                     result.waiter_ = std::make_shared<Waiter>(&callbacks->dispatcher(), callbacks);
                     attachBackfillWaiterLocked(inflight_it->second, result.waiter_);
                 }
