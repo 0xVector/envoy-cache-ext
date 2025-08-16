@@ -191,6 +191,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         // Have space to move to permanent cache
         const size_t size = inflight.size() + key.size();
         if (evictTillCapacityLocked(size)) {
+            ASSERT(!slots_[head_], "Head slot should be empty before insert");
             // Insert
             slots_[head_] = std::make_unique<Entry>();
             Entry& slot = *slots_[head_];
@@ -199,6 +200,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             slot.body_ = std::move(inflight.body_);
 
             cache_map_.insert_or_assign(key, slots_[head_].get());
+            head_ = (head_ + 1) % slot_count_; // Advance head
             used_size_ += size;
             ASSERT(size == slot.size());
             ENVOY_LOG(debug, "[CACHE] finalizeLocked: key={} moved to cache, size={}", key, size);
@@ -242,33 +244,41 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
     bool RingBufferCache::evictTillCapacityLocked(const size_t size_needed) {
         ENVOY_LOG(debug, "[CACHE] starting eviction: size_needed={}, used_size_={}, capacity_={}",
                   size_needed, used_size_, capacity_);
+        if (size_needed > capacity_) { // Early exit when exceeding total capacity
+            ENVOY_LOG(debug, "[CACHE] eviction failed: size_needed={} > capacity_={}", size_needed, capacity_);
+            return false;
+        }
+
         const size_t start = head_;
         // Head might be at the just inserted-to slot now
 
         // Ensure enough capacity
         while (capacity_ - used_size_ < size_needed) {
-            head_ = (head_ + 1) % slot_count_;
-
-            // Back at start
-            if (start == head_) { ENVOY_LOG(debug, "[CACHE] no space: size_needed={}", size_needed); return false; }
-
             // Try evict
-            if (!slots_[head_]) { continue; }
-            Entry& entry = *slots_[head_];
-            if (entry.pins_.load(std::memory_order_acquire) > 0) { continue; }
+            if (slots_[head_]) {
+                Entry& entry = *slots_[head_];
+                if (entry.pins_.load(std::memory_order_acquire) == 0) { // Can evict
+                    ENVOY_LOG(debug, "[CACHE] evicted: key={}, size={}", entry.key_, entry.size());
+                    used_size_ -= entry.size();
+                    cache_map_.erase(entry.key_);
+                    slots_[head_].reset();
+                }
+            }
 
-            // Can evict
-            ENVOY_LOG(debug, "[CACHE] evicted: key={}, size={}", entry.key_, entry.size());
-            used_size_ -= entry.size();
-            cache_map_.erase(entry.key_);
-            slots_[head_].reset();
+            head_ = (head_ + 1) % slot_count_; // Advance head
+
+            // Back at start, if not enough space we have lost
+            if (start == head_ && capacity_ - used_size_ < size_needed) {
+                ENVOY_LOG(debug, "[CACHE] no space: size_needed={}", size_needed);
+                return false;
+            }
         }
 
         // Might need to also find a free slot if we haven't evicted
         const size_t start_slot = head_;
         while (slots_[head_]) {
             head_ = (head_ + 1) % slot_count_;
-            if (head_ == start_slot) { return false; } // No slot free
+            if (head_ == start_slot) { return false; } // TODO evict for the slot
         }
 
         ASSERT(!slots_[head_]);

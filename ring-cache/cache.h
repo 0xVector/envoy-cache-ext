@@ -91,7 +91,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         void attachBackfillWaiterLocked(Inflight& inflight, const WaiterSharedPtr& waiter)
         ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
-        // After calling this, if returns true, head_ points to a free slot
+        // After calling this, if it returns true, head_ points to a free slot
         bool evictTillCapacityLocked(size_t size_needed) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
     };
 
