@@ -48,11 +48,11 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         explicit RingBufferCache(size_t capacity, size_t slot_count);
         [[nodiscard]] LookupResult lookup(absl::string_view key, Http::StreamDecoderFilterCallbacks* callbacks)
         ABSL_LOCKS_EXCLUDED(mutex_);
-        void publishHeaders(const key_t& key, const Http::ResponseHeaderMap& response_headers, bool end_stream)
+        void publishHeaders(absl::string_view key, const Http::ResponseHeaderMap& response_headers, bool end_stream)
         ABSL_LOCKS_EXCLUDED(mutex_); // Should only be called by the leader
-        void publishData(const key_t& key, const Buffer::Instance& data, bool end_stream) ABSL_LOCKS_EXCLUDED(mutex_);
+        void publishData(absl::string_view key, const Buffer::Instance& data, bool end_stream) ABSL_LOCKS_EXCLUDED(mutex_);
         // Should only be called by the leader
-        void removeWaiter(const key_t& key, const WaiterSharedPtr& waiter) ABSL_LOCKS_EXCLUDED(mutex_);
+        void removeWaiter(absl::string_view key, const WaiterSharedPtr& waiter) ABSL_LOCKS_EXCLUDED(mutex_);
 
     private:
         struct Entry {
@@ -87,7 +87,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         std::vector<std::unique_ptr<Entry> > slots_ ABSL_GUARDED_BY(mutex_); // Must never reallocate - entries must stay in place
         size_t head_ ABSL_GUARDED_BY(mutex_) = 0;
 
-        void finalizeLocked(const key_t& key) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+        void finalizeLocked(absl::string_view key) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
         void attachBackfillWaiterLocked(Inflight& inflight, const WaiterSharedPtr& waiter)
         ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 

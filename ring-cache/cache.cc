@@ -72,7 +72,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         return result;
     }
 
-    void RingBufferCache::publishHeaders(const key_t& key, const Http::ResponseHeaderMap& response_headers,
+    void RingBufferCache::publishHeaders(const absl::string_view key, const Http::ResponseHeaderMap& response_headers,
                                          bool end_stream) {
         std::vector<WaiterSharedPtr> waiters_copy;
         Http::ResponseHeaderMapPtr header_copy;
@@ -111,7 +111,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         }
     }
 
-    void RingBufferCache::publishData(const key_t& key, const Buffer::Instance& data, bool end_stream) {
+    void RingBufferCache::publishData(const absl::string_view key, const Buffer::Instance& data, bool end_stream) {
         std::vector<WaiterSharedPtr> waiters_copy;
         ENVOY_LOG(debug, "[CACHE] publishData: key={}, end_stream={}", key, end_stream);
 
@@ -159,7 +159,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         }
     }
 
-    void RingBufferCache::removeWaiter(const key_t& key, const WaiterSharedPtr& waiter) {
+    void RingBufferCache::removeWaiter(const absl::string_view key, const WaiterSharedPtr& waiter) {
         absl::MutexLock lock(&mutex_);
 
         const auto it = inflight_map_.find(key);
@@ -182,7 +182,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         ENVOY_LOG(debug, "[CACHE] removeWaiter: waiter entry missing");
     }
 
-    void RingBufferCache::finalizeLocked(const key_t& key) { // TODO: pass inflight_it as arg to avoid look up again ?
+    void RingBufferCache::finalizeLocked(const absl::string_view key) { // TODO: pass inflight_it as arg to avoid look up again ?
         const auto inflight_it = inflight_map_.find(key);
         ASSERT(inflight_it != inflight_map_.end(), "Finalize called on non-inflight key");
         Inflight& inflight = inflight_it->second;
