@@ -9,13 +9,13 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
     SINGLETON_MANAGER_REGISTRATION(ring_cache_singleton); // Register name for the singleton
 
     RingCacheFilterConfig::RingCacheFilterConfig(const ProtoRingCacheFilterConfig& proto,
-                                                 Server::Configuration::ServerFactoryContext& ctx) : cache_size_(
-        proto.ring_size()), slot_count_(proto.slot_count()) {
+                                                 Server::Configuration::ServerFactoryContext& ctx) : capacity_(
+        proto.capacity()), slot_count_(proto.slot_count()) {
         cache_ = ctx.singletonManager().getTyped<RingBufferCache>(
             SINGLETON_MANAGER_REGISTERED_NAME(ring_cache_singleton),
             //std::string(SingletonCacheName),
             [&proto] {
-                return std::make_shared<RingBufferCache>(proto.ring_size(), proto.slot_count());
+                return std::make_shared<RingBufferCache>(proto.capacity(), proto.slot_count());
             }, true);
     }
 

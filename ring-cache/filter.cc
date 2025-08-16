@@ -17,7 +17,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
     Http::FilterHeadersStatus RingCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers, const bool) {
         ENVOY_LOG(debug, "[CACHE] decodeHeaders for {}{} rs={}", headers.getHostValue(),
-                  headers.getPathValue(), config_->cacheSize());
+                  headers.getPathValue(), config_->capacity());
 
         if (!buildKey(headers.getHostValue(), headers.getPathValue())) {
             ENVOY_LOG(debug, "[CACHE] decodeHeaders: host or path is empty, skipping cache");

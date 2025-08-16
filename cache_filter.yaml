@@ -27,7 +27,7 @@ static_resources:
                   - name: ring_cache
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.ring_cache.v3.RingCacheFilterConfig
-                      ring_size: 1048576
+                      capacity: 128 #1048576
                       slot_count: 128
                   - name: envoy.filters.http.router
                     typed_config:

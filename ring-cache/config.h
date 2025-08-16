@@ -9,14 +9,14 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         explicit RingCacheFilterConfig(const ProtoRingCacheFilterConfig& proto,
                                        Server::Configuration::ServerFactoryContext& ctx);
 
-        [[nodiscard]] uint32_t cacheSize() const { return cache_size_; }
+        [[nodiscard]] uint32_t capacity() const { return capacity_; }
         [[nodiscard]] uint64_t slotCount() const { return slot_count_; }
         [[nodiscard]] RingBufferCacheSharedPtr cache() const { return cache_; }
 
         // Stats::Scope& scope();
 
     private:
-        uint64_t cache_size_;
+        uint64_t capacity_;
         uint64_t slot_count_;
 
     private:
