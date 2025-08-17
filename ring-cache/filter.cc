@@ -30,13 +30,18 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             case RingBufferCache::ResultType::Hit: {
                 role_ = Role::Cached;
                 ENVOY_LOG(debug, "[CACHE] decodeHeaders: cache hit for key={}", key_);
+
+                // Headers
                 auto& [resp_headers, resp_body] = hit.value();
                 const bool has_body = resp_body.length() > 0;
                 decoder_callbacks_->encodeHeaders(std::move(resp_headers), !has_body, RingCacheDetailsMessageHit);
+
+                // Body
                 if (has_body) {
                     ENVOY_LOG(debug, "[CACHE] decodeHeaders: sending cached body for key={}", key_);
                     decoder_callbacks_->encodeData(resp_body, true);
                 }
+
                 done_ = true;
                 ENVOY_LOG(debug, "[CACHE] decodeHeaders: done for key={}", key_);
                 return Http::FilterHeadersStatus::StopIteration;
@@ -50,7 +55,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
             case RingBufferCache::ResultType::Follower: {
                 role_ = Role::Follower;
-                waiter_ = waiter;
+                waiter_ = waiter; // Store Waiter handle
                 ENVOY_LOG(debug, "[CACHE] decodeHeaders: cache follower for key={}", key_);
                 return Http::FilterHeadersStatus::StopIteration;
             }

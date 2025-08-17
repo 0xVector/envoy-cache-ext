@@ -25,6 +25,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             // Hit
             if (cached_it != cache_map_.end()) {
                 result.type_ = ResultType::Hit;
+                // Copy out data from cache
                 Entry* entry = cached_it->second;
                 entry->pins_.fetch_add(1, std::memory_order_relaxed); // Increase in use to avoid eviction
                 header_ptr = entry->headers_.get();
@@ -53,7 +54,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             }
         }
 
-        // Serve hit
+        // Serve hit - unlocked
         Hit hit;
         hit.headers_ = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*header_ptr);
         if (body_length == 0) {
@@ -264,7 +265,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         const size_t start_slot = head_;
         while (slots_[head_]) {
             head_ = (head_ + 1) % slot_count_;
-            if (head_ == start_slot) { return false; } // TODO evict for the slot
+            if (head_ == start_slot) { return false; } // TODO evict first non-pinned just for the slot
         }
 
         ASSERT(!slots_[head_]);
