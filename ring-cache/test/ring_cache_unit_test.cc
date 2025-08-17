@@ -210,7 +210,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         }
 
         // Now fill the cache with larger entries to force eviction
-        for (int i = 0; i < 5; ++i) {
+        for (size_t i = 0; i < 5; ++i) {
             auto key = absl::StrCat("k", i);
             std::string big_data(10, 'x');
             auto big_leader = cache.lookup(key, nullptr);
@@ -252,7 +252,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         EXPECT_EQ(hit_body_original.toString(), "test");
 
         // Now fill the cache with larger entries to try forcing eviction
-        for (int i = 0; i < 10; ++i) {
+        for (size_t i = 0; i < 10; ++i) {
             auto key = absl::StrCat("k", i);
             auto other_leader = cache.lookup(key, nullptr);
             OwnedImpl data("data");

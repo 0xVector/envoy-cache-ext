@@ -191,18 +191,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         // Have space to move to permanent cache
         const size_t size = inflight.size() + key.size();
         if (evictTillCapacityLocked(size)) {
-            ASSERT(!slots_[head_], "Head slot should be empty before insert");
-            // Insert
-            slots_[head_] = std::make_unique<Entry>();
-            Entry& slot = *slots_[head_];
-            slot.key_ = key;
-            slot.headers_ = std::move(inflight.headers_);
-            slot.body_ = std::move(inflight.body_);
-
-            cache_map_.insert_or_assign(key, slots_[head_].get());
-            head_ = (head_ + 1) % slot_count_; // Advance head
-            used_size_ += size;
-            ASSERT(size == slot.size());
+            insertEntryLocked(key, std::move(inflight.headers_), std::move(inflight.body_));
             ENVOY_LOG(debug, "[CACHE] finalizeLocked: key={} moved to cache, size={}", key, size);
         } else { ENVOY_LOG(debug, "[CACHE] finalizeLocked: key={} dropped due to no space", key); }
 
@@ -258,10 +247,7 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
             if (slots_[head_]) {
                 Entry& entry = *slots_[head_];
                 if (entry.pins_.load(std::memory_order_acquire) == 0) { // Can evict
-                    ENVOY_LOG(debug, "[CACHE] evicted: key={}, size={}", entry.key_, entry.size());
-                    used_size_ -= entry.size();
-                    cache_map_.erase(entry.key_);
-                    slots_[head_].reset();
+                    evictHeadLocked();
                 }
             }
 
@@ -285,5 +271,28 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
         ENVOY_LOG(debug, "[CACHE] eviction done: size_needed={}, used_size_={}, capacity_={}",
                   size_needed, used_size_, capacity_);
         return true;
+    }
+
+    void RingBufferCache::evictHeadLocked() {
+        ASSERT(slots_[head_], "Head slot should be occupied before eviction");
+        Entry& entry = *slots_[head_];
+        ENVOY_LOG(debug, "[CACHE] evicted: key={}, size={}", entry.key_, entry.size());
+        used_size_ -= entry.size();
+        cache_map_.erase(entry.key_);
+        slots_[head_].reset();
+    }
+
+    void RingBufferCache::insertEntryLocked(absl::string_view key, Http::ResponseHeaderMapPtr&& headers,
+        std::string&& body) {
+        ASSERT(!slots_[head_], "Head slot should be empty before insert");
+        slots_[head_] = std::make_unique<Entry>();
+        Entry& slot = *slots_[head_];
+        slot.key_ = key;
+        slot.headers_ = std::move(headers);
+        slot.body_ = std::move(body);
+
+        cache_map_.insert_or_assign(key, slots_[head_].get());
+        head_ = (head_ + 1) % slot_count_; // Advance head
+        used_size_ += slot.size();
     }
 }

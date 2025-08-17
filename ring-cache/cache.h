@@ -93,6 +93,9 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
 
         // After calling this, if it returns true, head_ points to a free slot
         bool evictTillCapacityLocked(size_t size_needed) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+
+        void evictHeadLocked() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+        void insertEntryLocked(absl::string_view key, Http::ResponseHeaderMapPtr&& headers, std::string&& body) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
     };
 
     using RingBufferCacheSharedPtr = std::shared_ptr<RingBufferCache>;
