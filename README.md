@@ -95,6 +95,10 @@ On upstream response encoding, it is responsible for passing the headers / body 
 cached and handed out to followers that could be coalesced. The filter (in a leader role) is then left to use the
 upstream response for itself. Other filter roles are not meant to receive a response directly from the upstream.
 
+#### Key building
+
+The key is built in the filter itself. It is a simple concatenation of the host and path.
+
 ### Cache
 
 The cache itself is implemented in the `RingBufferCache` class in [cache.cc](ring-cache/cache.cc). It provides a simple
@@ -103,6 +107,20 @@ public API that the filter can use to utilize the caching functionality.
 The cache uses bounded memory to store responses which can be se by the `capacity` parameter.
 It doesn't take into account the inflight coalesced responses at this point, which is a limitation that could be
 removed in the future, at the cost of some added complexity.
+
+#### Singleton
+
+The cache class is registered into the Envoy singleton system to easily provide a single, shared global instance as per
+task statement.
+
+#### Caching format
+
+The cache takes a simplified approach to caching the responses: it ignores trailers, 1xx headers and metadata.
+It also ignores the response headers and doesn't tweak them in any way, just caching them untouched.
+
+**Rationale:** this simplifies the problem of caching and lets me deal with the interesting parts of the task.
+Trailers are not very common in HTTP requests and are very similar to headers from the technical standpoint. Their
+support wouldn't add much of value.
 
 #### Data structures
 
@@ -211,6 +229,15 @@ and custom deleters.
 **Rationale:** this ensures that the chunks stay alive just long enough in the unpredictable environment of dispatcher
 `post()` calls, where the order of execution can't be clear beforehand.
 
+#### Evictions
+
+The cache uses a straightforward scan algorithm to evict entries. The eviction start with considering the next slot,
+which usually means the oldest entry. Entries in use are just skipped.
+
+**Rationale:** this was designed primarily with simplicity in mind. More performant eviction algorithms (for example LRU)
+would need to store more information to work. This works with just a single head for both writing and evicting and needs
+no extra information.
+
 ### Cache API overview
 
 `lookup(key, callbacks)` - is called as the first stage of every new request stream. It atomically determines the outcome
@@ -235,3 +262,69 @@ The public API has to be called exactly in the manner prescribed per stream cate
 - Hit: lookup()
 - Follower: lookup() -> (if ending prematurely) removeWaiter()
 - Leader: lookup() -> publishHeaders() -> (if not header only) publishData() -> ... (till stream not ended) -> publishData() (last call has to end the stream)
+
+## Security considerations
+
+The cache is not particularly seurity hardened. In this form, it is vulnerable to many types of attacks, most significantly
+to DoS attacks on disproportionate memory usage cases.
+
+## Possible improvements
+
+### Current ideas
+
+These ideas were not realized in code yet, but could be a future improvement:
+
+1. a copy could be eliminated when the Leader publishes a chunk of data. The Leader could, instead of copying out
+the data for the cache, move out of the Buffer provided to the filter and reuse its resources. It would then have to
+`StopIteration` and get backfilled the moved data the same way as Followers do, eliminating a copy of data.
+1. track and account for the inflight response sizes - this would be very similar to the existing cache entry size
+accounting, just for inflight entries. A simple addition that could extend the cache bounded memory guarantee to inflight
+entries too.
+
+### Nice to have in a production version
+
+Te following ideas are a bit more complex, but would be very beneficial for a production release.
+
+1. reserve space ahead of time based on the Content-length field (if present), merging several smaller allocations to
+a single, bigger one.
+1. configurable and more complex cache keys. The HTTP method should be included, among other things, as the same path with different
+method can have varied semantics.
+1. finer grained locking. The current single lock is simple, but doesn't provide the best possible performance. I'd
+consider going in the direction of sharding - keeping the current internals, but splitting the keyspace evenly
+into multiple independent smaller caches that wont block each other.
+1. stats - Envoy provides a way to report various runtime statistics. Reporting e.g. the current cache load could be
+useful for testing, debugging or performance evaluation and general observability.
+1. support for trailers, 1xx headers, metadata and cache control headers - these are all a must in a production
+level cache, but do not fit into the scope of this task.
+1. much more testing - the provided unit and integration tests are far from a production-grade coverage of the cache,
+but adding many more tests is again beyond the scope of this task.
+
+## Development process
+
+How I developed the code for this task.
+
+### Roadblocks
+
+I've hit several roadblocks during the development.
+
+1. Building Envoy and Bazel: when I started, I had zero prior experience with Bazel and projects of the scale of Envoy
+were a new experience for me. I had a lot of problems to get the Envoy repository to compile and also had trouble figuring
+out where to potentially put my own code. I had problems with getting the codebase to even compile without hitting
+OOM on my workstation.  
+**How I solved it:** I found the [envoy-filter-example](https://github.com/envoyproxy/envoy-filter-example) repository
+and forked it, then picked apart its structure. I also read up a bit on Bazel and figured out how to make a BUILD file
+and throttle the memory usage of the compilation.
+1. Orienting myself in the Envoy codebase - this was a big problem from the start, as I've encountered Envoy for the first
+time.
+**How I solved it:** I read whatever sources I found on Envoy, then started reading relevant excerpts from the codebase.
+Gradually, I figured out the structure of the codebase and understood key Envoy concepts.
+1. Figuring out how to interpret parts of the task - I especially had trouble with the ring buffer storage structure,
+and multi-threading approach.
+**How I solved it:** I asked a set of questions, which cleared it up and nudged me towards making the key design choices.
+
+### Time spent
+
+I first spent multiple weeks doing light research couple hours a week, unsure how to approach the task correctly.
+I got to know the basics of Envoy, set it up and drafted some planned implementation.  
+When I started implementing the cache, I created most of the code over 2-3 days.  
+Then I wrote the tests and debugged it over around 1 day.
