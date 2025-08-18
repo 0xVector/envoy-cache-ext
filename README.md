@@ -570,9 +570,9 @@ Gradually, I figured out the structure of the codebase and understood key Envoy 
 and multi-threading approach.
 **How I solved it:** I asked a set of questions, which cleared it up and nudged me towards making the key design choices.
 
-### Time spent
+### Timeframe
 
-I first spent multiple weeks doing light research couple hours a week, unsure how to approach the task correctly.
+I first spent multiple weeks doing light research occasionally, unsure how to approach the task correctly.
 I got to know the basics of Envoy, set it up and drafted some planned implementation.  
 When I started implementing the cache, I created most of the code over 2-3 days.  
 Then I wrote the tests and debugged it over around 1 day.
