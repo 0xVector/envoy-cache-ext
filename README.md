@@ -59,7 +59,7 @@ curl -N http://127.0.0.1:10000/test?chunks=20  # Send a request for the same pat
 
 sleep 10  # Wait till the whole body is received and cached
 curl -N http://127.0.0.1:10000/test?chunks=20  # Send a request for the same path again
-# Should get the whole body immediatelly because it was cached previously
+# Should get the whole body immediately because it was cached previously
 ```
 
 To try out the eviction behaviour live, try setting the `capacity` cache config param in [`cache_filter.yaml`](cache_filter.yaml) config file
@@ -188,7 +188,7 @@ The most significant memory use is from storing copies of responses (specificall
 created in these places:
 - when Leader publishes headers/data, it is copied to the inflight store.  
 For headers, this is because the `encodeHeaders()`
-  takes ownership of the `HeaderMap` and thus needs it's own copy.  
+  takes ownership of the `HeaderMap` and thus needs its own copy.  
 Data could be moved from if `StopIteration` was returned, and then
   the Leader could be treated the same as Followers, eliminating the need for this copy. This could be an addition in the future.
 - when publishing headers, a temporary copy of the chunk is created (in addition to the inflight copy mentioned above)
@@ -265,14 +265,27 @@ The public API has to be called exactly in the manner prescribed per stream cate
 
 ## Security considerations
 
-The cache is not particularly seurity hardened. In this form, it is vulnerable to many types of attacks, most significantly
-to DoS attacks on disproportionate memory usage cases.
+The cache is not particularly security hardened, as I consider it more of a proof of concept than a production ready cache.
+In this form, it is vulnerable to many types of attacks, most significantly
+to DoS attacks, private data leaks and cache poisoning.
+
+The cache does not limit the size of a single entry beyond the basic
+total capacity, which could be exploited to evict many useful entries in favour of a single big entry.
+
+Inflight capacity not being limited is also an attack vector: responses with many chunks can stay inflight
+for a long time and exert memory pressure.  
+Also, even though too big inflight responses (over the cache capacity) will not get permanently cached after finalization,
+there is no limit on their size while still inflight, which means they could grow indefinitely and drain all resources.
+
+The cache caches all responses, which can include user specific responses (that can be dependent on e.g. a secret in
+cookies). This means cache users can steal cached private data of other users, which is a big security hole and would
+need to be addressed in production.
 
 ## Possible improvements
 
 ### Current ideas
 
-These ideas were not realized in code yet, but could be a future improvement:
+These ideas were not realized in code yet, but I'd like them as a future improvement:
 
 1. a copy could be eliminated when the Leader publishes a chunk of data. The Leader could, instead of copying out
 the data for the cache, move out of the Buffer provided to the filter and reuse its resources. It would then have to
@@ -291,13 +304,14 @@ a single, bigger one.
 method can have varied semantics.
 1. finer grained locking. The current single lock is simple, but doesn't provide the best possible performance. I'd
 consider going in the direction of sharding - keeping the current internals, but splitting the keyspace evenly
-into multiple independent smaller caches that wont block each other.
-1. stats - Envoy provides a way to report various runtime statistics. Reporting e.g. the current cache load could be
-useful for testing, debugging or performance evaluation and general observability.
-1. support for trailers, 1xx headers, metadata and cache control headers - these are all a must in a production
-level cache, but do not fit into the scope of this task.
+into multiple independent smaller caches that won't block each other.
+   1. stats - Envoy provides a way to report various runtime statistics. Reporting e.g. the current cache load could be
+   useful for testing, debugging or performance evaluation and general observability.
+1. support for trailers, 1xx headers, metadata, response codes and cache control headers - these are all a must in a production
+level cache, but do not fit into the scope of this task. Caching should probably be restricted to only responses that
+are not user specific and can be cached (maybe even just GET requests).
 1. much more testing - the provided unit and integration tests are far from a production-grade coverage of the cache,
-but adding many more tests is again beyond the scope of this task.
+but adding many more tests is again beyond the scope of this task. Fuzzing tests could also be highly beneficial.
 
 ## Development process
 
