@@ -83,13 +83,15 @@ This project has several goals:
   - and is capable of evicting cached entries
 - to keep the implementation simple
 - to provide a proof of the concept that implement the most important and interesting parts
+- to prefer performant solutions where other concerns don't take priority
 
 It also has these non-goals:
 - to provide a production-grade cache
 - to make all possible performance optimizations (at the cost of increased complexity)
 - to respect all details of HTTP caching
+- to be security-hardened
 
-These were selected based on the task specification and from an effort to limit the scope of the task.
+These were selected based on the task specification and in an effort to limit the scope of the task.
 
 ## Architecture overview
 
@@ -393,7 +395,7 @@ The cache has some overhead when storing the response entries. This overhead is 
 a reference count in addition to the useful response data. The key could be eliminated by a more sophisticated
 solution which uses some other way to find the map entry when it is being evicted.
 
-Inflight entries have a bit bigger overhead, as they also store information about coalesced followers.
+Inflight entries have a bit larger overhead, as they also store information about coalesced followers.
 
 ### Watermarking
 
@@ -477,6 +479,9 @@ has a completely separate cache storage from the caching control, which are both
 
 Envoy heavily uses the virtual interface - concrete implementation pattern, which could be useful in this case too, mainly
 for easier testing and extensibility (parts of the implementation could be swapped out without breaking the API).
+
+I tried to make the implementation relatively decomposed, used comments in more complicated sections and added assertions.
+There is a room to improvement, but the code should be readable and extendable by other developers.
 
 ## Tests
 
@@ -563,11 +568,11 @@ OOM on my workstation.
 and forked it, then picked apart its structure. I also read up a bit on Bazel and figured out how to make a BUILD file
 and throttle the memory usage of the compilation.
 1. Orienting myself in the Envoy codebase - this was a big problem from the start, as I've encountered Envoy for the first
-time.
+time.  
 **How I solved it:** I read whatever sources I found on Envoy, then started reading relevant excerpts from the codebase.
 Gradually, I figured out the structure of the codebase and understood key Envoy concepts.
 1. Figuring out how to interpret parts of the task - I especially had trouble with the ring buffer storage structure,
-and multi-threading approach.
+and multi-threading approach.  
 **How I solved it:** I asked a set of questions, which cleared it up and nudged me towards making the key design choices.
 
 ### Timeframe
@@ -579,7 +584,7 @@ Then I wrote the tests and debugged it over around 1 day.
 
 ### Sources used
 
-I used these sources to learn about the architecture of Envoy
+I used these sources to learn about the architecture of Envoy:
 - [Envoy docs](https://www.envoyproxy.io/docs/envoy/v1.35.0/)
 - [Envoy source markdown docs](https://github.com/envoyproxy/envoy/tree/main/source/docs)
 - Envoy source code, particularly `Buffer::OwnedImpl` and the existing HTTP cache extension
