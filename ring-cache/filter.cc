@@ -31,6 +31,8 @@ namespace Envoy::Extensions::HttpFilters::RingCache {
                 role_ = Role::Cached;
                 ENVOY_LOG(debug, "[CACHE] decodeHeaders: cache hit for key={}", key_);
 
+                // TODO: Simple refactor - move the following part (encodeHeaders+Data) inside the cache to simplify and decouple this
+
                 // Headers
                 auto& [resp_headers, resp_body] = hit.value();
                 const bool has_body = resp_body.length() > 0;
