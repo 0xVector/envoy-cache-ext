@@ -78,6 +78,24 @@ These can be set in the YAML config file.
 
 The whole source is in the [`ring-cache`](ring-cache) directory.
 
+### Existing extension
+
+I decided to write the whole cache by myself. An alternative to this would be to use the work-in-progress and not production
+ready HTTP cache extension.
+
+As of now, it is composed of a cache class implementing the HTTP caching standards, control headers
+etc. and an interface to add cache storage plugins. There are storage plugins right now, a non evicting in-memory storage
+and a filesystem storage. I did not use any of this code, but I used it as a reference and inspiration for my own implementation.
+
+**Rationale:** I heavily considered building on top of the existing extension. An advantage would be that whilst not production
+ready yet, it already respects many of the nuanced parts of HTTP caching that I am not implementing myself.  
+I decided against it due to concerns about existing code complexity. I think writing my own simplified cache was a quicker
+way to get some results, compared to studying the existing code in detail to figure out how to extend it.  
+Another problem is that the extension doesn't solve my problem exactly - it doesn't seem to support coalescing, adding
+which might entail changes to the cache interface, eliminating the value of having a ready implementation. The simple in-memory
+storage can't evict entries, so it's not suitable as well and would have to be modified or even redesigned.  
+Overall, I found my own cache preferable for this task, but would heavily consider the extension for production code.
+
 ### Filter
 
 The filter is implemented in the [`filter.cc`](ring-cache/filter.cc) as a class implementing the `Http::StreamFilter`
@@ -95,6 +113,16 @@ On upstream response encoding, it is responsible for passing the headers / body 
 cached and handed out to followers that could be coalesced. The filter (in a leader role) is then left to use the
 upstream response for itself. Other filter roles are not meant to receive a response directly from the upstream.
 
+**Rationale:** I wanted most of the caching logic to be contained in the cache class and the filter to not be too
+cluttered for future extensibility and encapsulation (cache internals can be improved without having to rewrite the filter).
+The filter is coupled to the cache to a degree (e.g. non completely trivial API calling contract, see the cache API part for more details),
+but this isn't that big of an issue as long as the filter is still small - even a rewrite of the filter, in case of some breaking cache API changes,
+wouldn't be too big of a cost.  
+I chose to make the filter aware of its category (role) because we need some behaviour changes based on the role.
+The filter needs to at least return the correct `Filter..Status` value (which are different) and post the upstream
+response only in the Leader case.
+
+
 #### Key building
 
 The key is built in the filter itself. It is a simple concatenation of the host and path.
@@ -111,7 +139,12 @@ removed in the future, at the cost of some added complexity.
 #### Singleton
 
 The cache class is registered into the Envoy singleton system to easily provide a single, shared global instance as per
-task statement.
+task statement.  
+
+I also considered an alternative design: having a thread-local cache instead of a global one. As per the task statement,
+I avoided this design. Its advantage would be a simpler cache without locking and synchronization overhead, at the cost
+of significantly increased memory usage due to redundantly stored responses. This might be a good tradeoff in some cases,
+but as we can't influence what thread receives what stream, it's not a good fit here.
 
 #### Caching format
 
@@ -263,6 +296,97 @@ The public API has to be called exactly in the manner prescribed per stream cate
 - Follower: lookup() -> (if ending prematurely) removeWaiter()
 - Leader: lookup() -> publishHeaders() -> (if not header only) publishData() -> ... (till stream not ended) -> publishData() (last call has to end the stream)
 
+## Performance overview
+
+The purpose of a coalescing cache like this is to improve the performance of a system by reducing the load on the upstream.
+This is done in two ways:
+1. caching the responses to not need to contact the upstream when the same request was already
+fulfilled recently
+2. coalescing identical ongoing requests to mitigate the thundering herd problem (a burst of requests exhausting upstream resources)
+and speed up responses in some cases with a slow upstream.
+
+My implementation achieves both of these goals. As with any performance optimization, there are tradeoffs. Some of them
+are inherent to a caching system like this, while some others are a result of my implementation and could be potentially
+alleviated.
+
+### Latency vs Throughput
+
+The effects of a cache on latency and throughput are highly dependent on the parameters of the upstream.
+With a slow upstream, the cache can greatly improve latency for cache hits and even the first parts of a coalesced request.
+Not only does the client not need to wait for the slow upstream to produce the responses, the cache can also be closer in
+the network and reduce the latency in this way as well.
+The throughput will also be improved, as the upstream will have fewer requests to deal with thanks to the cache shielding it.
+
+With a very fast upstream, these tradeoffs change: latency won't be decreased much, or may even be increased - the cache
+has some internal overhead and the upstream can be potentially more performant. The coalescing can still be a strong
+improvement though, as the throughput gain can scale nicely with the amount of burst requests for the same key.
+
+### Lock contention
+
+As the cache uses only one mutex internally, this can become a source of significant overhead. The tradeoff and
+reasoning for this is explained in the **Thread safety** part of the **Architecture Overview**.
+
+While the critical sections could be shortened in a few cases by a better or more complex design, the single mutex will
+always be a hard limitation. The most promising solution I see is sharding the cache: when using a good hash function
+that behaves random-like (enough), the hash space split evenly will result in an approximately evenly split key space.
+In other words, keys will be mapped to their cache shards uniformly, resulting in a uniform load.  
+The cache shard can be just smaller instances of the current cache class, only serving the part of the key space that
+hashed to a specific hash range. This could nicely lower the locking overhead, as multiple different keys can be served
+at the same time while still providing global caching.
+
+### Watermarking
+
+Watermark buffers are an Envoy feature that aims to provide a robust and general solution to flow control.
+
+Buffers have two configured limits - a high and low watermark. These limits provide a soft cap on the buffer capacity - when a buffer
+exceeds the high watermark, it informs its data sources of this by calling a registered callback. The data sources are
+then expected to stop sending more data to the buffer, allowing it to drain. When the buffer is drained enough, it hits
+the low watermark and again informs the sources by a callback. The sources can then resume sending more data.
+
+My implementation doesn't call any watermarking callbacks as it did not fit into its scope. It could be added as a future
+improvement.
+
+#### Coalescing
+
+The main flow control concern this cache creates is during coalescing: a single upstream chunk (even though not copied
+directly in the internal cache buffers) is given to potentially many followers and into their downstream network buffers.
+The risk is that in case of even a follower hitting the high watermark, the whole upstream stream has to be paused till
+the slowest follower drains, otherwise the follower buffer can run out.
+
+To support watermarking in coalesced requests and fix this issue, the following things would have to be implemented:
+- when a Follower is attaching, a cache should attach a watermark callback to handle the high/low signals
+- when any Follower signals the high watermark, the Leader should propagate this to the upstream to pause it
+- when all Followers hit the low watermark, the Leader can resume the upstream again
+
+#### Cache hits
+
+Another watermarking related issue happens when serving a cache hit. In this case, the cache acts as an upstream itself,
+and thus should respect watermark signals from its consumer - when the stream hits the high mark, it should pause
+and wait for the consumer to drain before sending more cached hits.
+
+The implementation doesn't chunk the cached responses at all, which can immediately overshoot the high watermark with
+bigger bodies. This should be addressed with the watermarking and chunks should be paused when a high signal is received.
+
+#### Flow control in different HTTP versions
+
+While the implementation of watermarking when coalescing can be the same, there are some significant differences to
+flow control across HTTP protocol versions:
+
+**HTTP/1.1** has no built-in flow control primitives and relies on TCP flow control. Individual requests usually have their own
+TCP connections, which means that a slow client doesn't affect others. Coalescing changes this though, as a single slow Follower
+can block all others for they same key. The backpressure comes from the
+downstream connection socket buffer.
+
+**HTTP/2** connections multiplex multiple requests streams into a single connection. Due to this, it provides a built-in,
+stream level flow control via a flow control window. In a nutshell, the size of the window is exchanged between the parties
+and sender limits its output when reaching the end of the window. The backpressure can also come from this window.
+
+**HTTP/3** introduces the QUIC protol as a new transport layer protocol. It improves the multiplexing capabilities over
+HTTP/2 by making multiplexed streams over a single connection independent and thus eliminating the HoL blocking that
+HTTP/2 displayed - when e.g a packet loss occurred in a single stream, all streams in the multiplexed connection were
+blocked till retransmission. This also means that when a single slow follower pauses the whole coalesced upstream stream
+for all followers, other streams multiplexed in their connections are not affected.
+
 ## Security considerations
 
 The cache is not particularly security hardened, as I consider it more of a proof of concept than a production ready cache.
@@ -281,11 +405,13 @@ The cache caches all responses, which can include user specific responses (that 
 cookies). This means cache users can steal cached private data of other users, which is a big security hole and would
 need to be addressed in production.
 
+## Extensibility and maintenance
+
 ## Possible improvements
 
 ### Current ideas
 
-These ideas were not realized in code yet, but I'd like them as a future improvement:
+These ideas were not realized in code yet, but I would work on them, had I more resources for the project.
 
 1. a copy could be eliminated when the Leader publishes a chunk of data. The Leader could, instead of copying out
 the data for the cache, move out of the Buffer provided to the filter and reuse its resources. It would then have to
@@ -293,6 +419,8 @@ the data for the cache, move out of the Buffer provided to the filter and reuse 
 1. track and account for the inflight response sizes - this would be very similar to the existing cache entry size
 accounting, just for inflight entries. A simple addition that could extend the cache bounded memory guarantee to inflight
 entries too.
+
+Some more specific ideas are documented as TODOs directly in the source.
 
 ### Nice to have in a production version
 
@@ -303,15 +431,19 @@ a single, bigger one.
 1. configurable and more complex cache keys. The HTTP method should be included, among other things, as the same path with different
 method can have varied semantics.
 1. finer grained locking. The current single lock is simple, but doesn't provide the best possible performance. I'd
-consider going in the direction of sharding - keeping the current internals, but splitting the keyspace evenly
+consider going in the direction of sharding - keeping the current internals, but splitting the hash space evenly
 into multiple independent smaller caches that won't block each other.
-   1. stats - Envoy provides a way to report various runtime statistics. Reporting e.g. the current cache load could be
-   useful for testing, debugging or performance evaluation and general observability.
+1. stats - Envoy provides a way to report various runtime statistics. Reporting e.g. the current cache load could be
+useful for testing, debugging or performance evaluation and general observability.
 1. support for trailers, 1xx headers, metadata, response codes and cache control headers - these are all a must in a production
 level cache, but do not fit into the scope of this task. Caching should probably be restricted to only responses that
 are not user specific and can be cached (maybe even just GET requests).
 1. much more testing - the provided unit and integration tests are far from a production-grade coverage of the cache,
 but adding many more tests is again beyond the scope of this task. Fuzzing tests could also be highly beneficial.
+1. security hardening - the security section outlines the main attack vectors, these all (and more) must be addressed
+before any production deployment.
+1. watermarking - see the section in **Performance overview**.
+1. more configuration options - key, coalescing cap, individual response size cap, eviction parameters, cacheable responses... 
 
 ## Development process
 
@@ -342,3 +474,12 @@ I first spent multiple weeks doing light research couple hours a week, unsure ho
 I got to know the basics of Envoy, set it up and drafted some planned implementation.  
 When I started implementing the cache, I created most of the code over 2-3 days.  
 Then I wrote the tests and debugged it over around 1 day.
+
+### Sources used
+
+I used these sources to learn about the architecture of Envoy
+- [Envoy docs](https://www.envoyproxy.io/docs/envoy/v1.35.0/)
+- [Envoy source markdown docs](https://github.com/envoyproxy/envoy/tree/main/source/docs)
+- Envoy source code, particularly `Buffer:OwnedImpl` and the existing HTTP cache extension
+- [Envoy Proxy Insider](https://envoy-insider.mygraphql.com/en/latest/index.html)
+- various medium and other blog posts
