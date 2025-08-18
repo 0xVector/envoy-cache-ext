@@ -74,6 +74,23 @@ The cache uses a standard protobuf config with 2 configurable parameters:
 
 These can be set in the YAML config file.
 
+## Goals and Non-goals
+
+This project has several goals:
+- to provide a thread safe global cache of responses
+  - that has bounded cache memory usage
+  - and does request coalescing
+  - and is capable of evicting cached entries
+- to keep the implementation simple
+- to provide a proof of the concept that implement the most important and interesting parts
+
+It also has these non-goals:
+- to provide a production-grade cache
+- to make all possible performance optimizations (at the cost of increased complexity)
+- to respect all details of HTTP caching
+
+These were selected based on the task specification and from an effort to limit the scope of the task.
+
 ## Architecture overview
 
 The whole source is in the [`ring-cache`](ring-cache) directory.
@@ -106,6 +123,11 @@ The filter instances and request streams are grouped into 3 distinct categories 
 - Follower (when a response is not cached, but is inflight -> can be coalesced)
 - Leader (when a response is not cached and not inflight -> an upstream request has to be made)
 
+**Rationale:** I also considered a simplified flow where there would only be a simpler, unified 2 role API: consumer filter
+either gets filled by the cache (transparent to it whatever it is a hit or a follower), or becomes a leader. I still think
+this is a valid option, but in the end, I decided to use the 3 role API to avoid having to go through the dispatcher event loop on
+cache hits too - that path is necessarily a bit slower and I consider hit latency to be important.
+
 The filter is meant to be lean and offload most functionality to the `RingBufferCache` class. It tracks the basic
 state of its stream and uses the `RingBufferCache::lookup` function to determine the caching status for a request.
 This happens when decoding downstream request headers, ignoring the request body, trailers and metadata.  
@@ -122,17 +144,18 @@ I chose to make the filter aware of its category (role) because we need some beh
 The filter needs to at least return the correct `Filter..Status` value (which are different) and post the upstream
 response only in the Leader case.
 
-
 #### Key building
 
-The key is built in the filter itself. It is a simple concatenation of the host and path.
+The key is built in the filter itself. It is a simple concatenation of the host and path with a delimiter.  
+The delimiter can be reconsidered in the future, as invalid delimiter choice opens up a range of attack vectors by altering
+the cache key by changing one of these components to resemble a part of the other.
 
 ### Cache
 
 The cache itself is implemented in the `RingBufferCache` class in [cache.cc](ring-cache/cache.cc). It provides a simple
 public API that the filter can use to utilize the caching functionality.
 
-The cache uses bounded memory to store responses which can be se by the `capacity` parameter.
+The cache uses bounded memory to store responses which can be set by the `capacity` parameter.
 It doesn't take into account the inflight coalesced responses at this point, which is a limitation that could be
 removed in the future, at the cost of some added complexity.
 
@@ -149,11 +172,28 @@ but as we can't influence what thread receives what stream, it's not a good fit 
 #### Caching format
 
 The cache takes a simplified approach to caching the responses: it ignores trailers, 1xx headers and metadata.
-It also ignores the response headers and doesn't tweak them in any way, just caching them untouched.
+It also ignores the response header semantics and doesn't tweak them in any way, just caching them untouched.  
+It also doesn't take into account HTTP methods - in a production environment, generally only `GET` and `HEAD` methods
+make sense to cache.
 
 **Rationale:** this simplifies the problem of caching and lets me deal with the interesting parts of the task.
 Trailers are not very common in HTTP requests and are very similar to headers from the technical standpoint. Their
-support wouldn't add much of value.
+support wouldn't add much of value.  
+Similarly, while differentiating between HTTP methods is trivial, adding a simple exclusion list is not a particularly
+interesting feature.
+
+#### Coalescing
+
+Apart from serving cache hits from stored entries, the cache can coalesce requests with the same key at a similar time
+to a single upstream request.
+
+This is achieved by receiving `StreamDecoderFilterCallbacks` from the filter instance and `post()`-ing to its dispatcher
+with an appropriate `encodeX()` call. The coalesced followers are backfilled immediately (almost, as the encode calls
+must run on the follower thread, so they must pass through their dispatcher event loop).  
+When new data arrives from the Leader, it is also published to the followers as soon as possible. Followers thus receive
+the data almost at the same time as the leader. New followers can join and get coalesced as long as the response is incomplete.
+
+The coalesced request also be cached permanently after it's finalized.
 
 #### Data structures
 
@@ -167,7 +207,7 @@ All of these structures are guarded by a single internal mutex.
 **Rationale:** My interpretation of the ring buffer cache from the task specification is that of a fixed size buffer of pointers to entries.
 I picked this implementation because of several reasons:
 - it allows for simple eviction / free slot allocation via a single straightforward scan
-- cache hit serving is fast, as only a no-copy `BufferFragment` is constructed from the existing entry
+- cache hit serving is fast, as only a no-copy `BufferFragment` is constructed from the existing entry (and the header is copied, which is presumed to be small enough for it to be insignificant)
 - any data structures can be used for the actual data inside without having to serialize/deserialize or otherwise transform
   the data - in particular the `ResponseHeaderMap`
 
@@ -195,7 +235,8 @@ the raw header + data buffer, in other words, the worst of both worlds.
 
 #### Thread safety
 
-The cache class public API is thread safe. The thread-safety is built around a single mutex and some atomics.
+The cache class public API is thread safe. The thread-safety is built around a single mutex and some atomics.  
+`encodeX()` calls are never called across threads, which is strictly forbidden by the Envoy thread model.
 
 **Rationale:** The decision to use just a single mutex is due to several reasons:
 
@@ -243,6 +284,13 @@ Notably, data is **not** copied in these significant instances:
 - when serving a cached hit, the data is not copied from the cache store, instead a `BufferFragment` is used to just
   reference it without copying.
 
+The cache has bounded memory for cached responses, but doesn't limit the size of inflight responses for now.  
+The memory is accounted manually on entry creation/eviction.
+
+The size of an entry is calculated as follows: `key_size + body_size + number_of_headers`.  
+The headers could be accounted by the real size, but this doesn't seem to be straightforwardly provided by the `HeaderMap`
+objects.
+
 #### Resource lifetime management
 
 The cache manages the lifetime of its entries by storing a simple reference count. Entries still in use
@@ -265,7 +313,8 @@ and custom deleters.
 #### Evictions
 
 The cache uses a straightforward scan algorithm to evict entries. The eviction start with considering the next slot,
-which usually means the oldest entry. Entries in use are just skipped.
+which usually means the oldest entry. Entries in use are just skipped. It is behaving as a FIFO container with some exceptions - a younger
+unused entry can get evicted if the older ones are still in use.
 
 **Rationale:** this was designed primarily with simplicity in mind. More performant eviction algorithms (for example LRU)
 would need to store more information to work. This works with just a single head for both writing and evicting and needs
@@ -278,11 +327,11 @@ for this key and returns a result with the appropriate category (`Hit/Follower/L
 contain the cached data and can immediately be used to fulfill the request, whereas `Follower/Leader` results are more
 like a marker instructing the filter to wait for further processing.
 
-`publishHeaders(key, headers, end_stream)` - function for publishing the request headers by a `Leader`. This
+`publishHeaders(key, headers, end_stream)` - function for publishing the response headers by a `Leader`. This
 triggers the backfilling of coalesced `Followers` and can also finalize the response if it's the end of the stream,
 moving it to the permanent cache.
 
-`publishData(key, data, end_stream)` - similar to the function above but for publishing request data. Has to only be called
+`publishData(key, data, end_stream)` - similar to the function above but for publishing response data. Has to only be called
 after a call to `publishHeaders()` for the key that hasn't been ended yet.
 
 `removeWaiter(key, waiter)` - a function to signal that the filter is ending its lifetime prematurely and will not
@@ -326,6 +375,10 @@ improvement though, as the throughput gain can scale nicely with the amount of b
 As the cache uses only one mutex internally, this can become a source of significant overhead. The tradeoff and
 reasoning for this is explained in the **Thread safety** part of the **Architecture Overview**.
 
+Lock contention becomes significant under heavy request load. Different request streams can run on different worker threads
+in Envoy in parallel, but they will fight over the single mutex on all cache functions that hold it. This means that e.g.
+completely different queries with a different key can't be served concurrently.
+
 While the critical sections could be shortened in a few cases by a better or more complex design, the single mutex will
 always be a hard limitation. The most promising solution I see is sharding the cache: when using a good hash function
 that behaves random-like (enough), the hash space split evenly will result in an approximately evenly split key space.
@@ -333,6 +386,14 @@ In other words, keys will be mapped to their cache shards uniformly, resulting i
 The cache shard can be just smaller instances of the current cache class, only serving the part of the key space that
 hashed to a specific hash range. This could nicely lower the locking overhead, as multiple different keys can be served
 at the same time while still providing global caching.
+
+### Memory overhead
+
+The cache has some overhead when storing the response entries. This overhead is minimal - it only stores the key and
+a reference count in addition to the useful response data. The key could be eliminated by a more sophisticated
+solution which uses some other way to find the map entry when it is being evicted.
+
+Inflight entries have a bit bigger overhead, as they also store information about coalesced followers.
 
 ### Watermarking
 
@@ -381,9 +442,9 @@ downstream connection socket buffer.
 stream level flow control via a flow control window. In a nutshell, the size of the window is exchanged between the parties
 and sender limits its output when reaching the end of the window. The backpressure can also come from this window.
 
-**HTTP/3** introduces the QUIC protol as a new transport layer protocol. It improves the multiplexing capabilities over
-HTTP/2 by making multiplexed streams over a single connection independent and thus eliminating the HoL blocking that
-HTTP/2 displayed - when e.g a packet loss occurred in a single stream, all streams in the multiplexed connection were
+**HTTP/3** introduces the QUIC protocol as a new transport layer protocol. It improves the multiplexing capabilities over
+HTTP/2 by making multiplexed streams over a single connection independent and thus eliminating the HoL blocking inside a connection
+that HTTP/2 displayed - when e.g a packet loss occurred in a single stream, all streams in the multiplexed connection were
 blocked till retransmission. This also means that when a single slow follower pauses the whole coalesced upstream stream
 for all followers, other streams multiplexed in their connections are not affected.
 
@@ -405,11 +466,49 @@ The cache caches all responses, which can include user specific responses (that 
 cookies). This means cache users can steal cached private data of other users, which is a big security hole and would
 need to be addressed in production.
 
+Cache keys should get normalized before caching - for example, some parts of the paths are not case-sensitive and could
+get cached redundantly. This can be misused by attackers to strain resources.
+
 ## Extensibility and maintenance
 
-## Possible improvements
+The code is split into the filter and cache parts. The codebase is not too large now, but for better maintainability,
+the more complex cache class could be further decomposed into independent parts - for example, the existing cache extension
+has a completely separate cache storage from the caching control, which are both merged in my class.
 
-### Current ideas
+Envoy heavily uses the virtual interface - concrete implementation pattern, which could be useful in this case too, mainly
+for easier testing and extensibility (parts of the implementation could be swapped out without breaking the API).
+
+## Tests
+
+I wrote several unit and integration tests for the cache. The tests are far from comprehensive - my main goal was to demonstrate
+key behaviour is working properly.
+
+### Unit tests
+
+The unit tests focus on the cache class. They test some basic edge cases, test some invariants and demonstrate behaviour
+that the cache provides - caching and coalescing.
+
+### Integration tests
+
+The integration tests check the end to end behaviour of the cache and try to simulate a few realistic scenarios.  
+More tests, especially focusing on higher contention use could be added.
+
+### Fuzzing tests
+
+There are no fuzzing tests implemented at the moment, they could be a good improvement for the future though - tests
+with real-looking patterns of requests could be helpful to catch more subtle bugs and test the cache in various load conditions.
+
+## Limitations and possible improvements
+
+### Main limitations
+
+- the cache has bounded memory only for the cached entries, not for the inflight entries which are not limited in any way.
+This has bad implications for security, but the fix is relatively simple and can be implemented as a future upgrade.
+- the cache doesn't support trailers, metadata, 1xx headers nor cache control headers. These were all deemed as not absolutely
+necessary to provide some results but could be added in the future, some easily, some a bit harder.
+- watermarking is not implemented
+
+### Current ideas and TODOs
 
 These ideas were not realized in code yet, but I would work on them, had I more resources for the project.
 
@@ -420,11 +519,12 @@ the data for the cache, move out of the Buffer provided to the filter and reuse 
 accounting, just for inflight entries. A simple addition that could extend the cache bounded memory guarantee to inflight
 entries too.
 
-Some more specific ideas are documented as TODOs directly in the source.
+Some more specific ideas are documented as TODOs directly in the source. Some of these are possible refactors
+which would simplify the implementation.
 
 ### Nice to have in a production version
 
-Te following ideas are a bit more complex, but would be very beneficial for a production release.
+The following ideas are a bit more complex, but would be very beneficial for a production release.
 
 1. reserve space ahead of time based on the Content-length field (if present), merging several smaller allocations to
 a single, bigger one.
@@ -444,6 +544,8 @@ but adding many more tests is again beyond the scope of this task. Fuzzing tests
 before any production deployment.
 1. watermarking - see the section in **Performance overview**.
 1. more configuration options - key, coalescing cap, individual response size cap, eviction parameters, cacheable responses... 
+1. more robust public API - additional checks when called in a contract breaking manner, etc.
+1. better eviction algorithm - e.g. something like LRU or similar.
 
 ## Development process
 
@@ -480,6 +582,6 @@ Then I wrote the tests and debugged it over around 1 day.
 I used these sources to learn about the architecture of Envoy
 - [Envoy docs](https://www.envoyproxy.io/docs/envoy/v1.35.0/)
 - [Envoy source markdown docs](https://github.com/envoyproxy/envoy/tree/main/source/docs)
-- Envoy source code, particularly `Buffer:OwnedImpl` and the existing HTTP cache extension
+- Envoy source code, particularly `Buffer::OwnedImpl` and the existing HTTP cache extension
 - [Envoy Proxy Insider](https://envoy-insider.mygraphql.com/en/latest/index.html)
 - various medium and other blog posts
